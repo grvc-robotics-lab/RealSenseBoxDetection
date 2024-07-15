@@ -8,7 +8,7 @@ This software module enables the detection and localization of a parcel, such as
 - [Usage](#usage)
   - [Running the Program](#running-the-program)
   - [Adjusting Parameters](#adjusting-parameters)
-- [Functions Overview](#functions)
+- [Functions Overview](#functions-overview)
   - [Core Functions](#core-functions)
     - [processImage](#processimage)
     - [getBestPolygon](#getbestpolygon)
