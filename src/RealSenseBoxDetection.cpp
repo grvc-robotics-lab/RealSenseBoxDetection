@@ -3,6 +3,7 @@
 #include <Eigen/Dense>
 #include <iostream>
 #include <iomanip>
+#include "tinyxml2.h"
 
 using namespace cv;
 using namespace std;
@@ -14,7 +15,9 @@ bool selectObject = false;
 int trackObject = 0;
 Point origin;
 
-int vmin = 80, vmax = 256, smin = 150, smax = 256, huemin = 20, huemax = 30, minContour = 5000;
+string xmlFileName = "../Config.xml";
+
+int vmin = 50, vmax = 256, smin = 150, smax = 256, huemin = 20, huemax = 30, minContour = 5000;
 
 struct orthoedro{
     vector<Vector3d> measuredPoints;
@@ -28,34 +31,13 @@ struct orthoedro{
     double height;
 };
 
-void onMouse(int event, int x, int y, int, void*) {
-    if (selectObject) {
-        selection.x = MIN(x, origin.x);
-        selection.y = MIN(y, origin.y);
-        selection.width = std::abs(x - origin.x);
-        selection.height = std::abs(y - origin.y);
 
-        selection &= Rect(0, 0, image.cols, image.rows);
-    }
-
-    switch (event) {
-        case EVENT_LBUTTONDOWN:
-            origin = Point(x, y);
-            selection = Rect(x, y, 0, 0);
-            selectObject = true;
-            break;
-        case EVENT_LBUTTONUP:
-            selectObject = false;
-            if (selection.width > 0 && selection.height > 0)
-                trackObject = -1;
-            break;
-    }
-}
-
+// Verifies if the point is within the valid frame dimensions.
 bool isValidPoint(const Point& pt, const rs2::depth_frame& depth_frame) {
     return pt.x >= 0 && pt.x < depth_frame.get_width() && pt.y >= 0 && pt.y < depth_frame.get_height();
 }
 
+// Ensures the ROI stays within valid image dimensions.
 Rect adjustROI(Rect roi, Size imgSize) {
     roi.x = max(0, roi.x);
     roi.y = max(0, roi.y);
@@ -64,23 +46,86 @@ Rect adjustROI(Rect roi, Size imgSize) {
     return roi;
 }
 
-void onVminChange(int, void*) { vmin = getTrackbarPos("Vmin", "Mask Image"); }
-void onVmaxChange(int, void*) { vmax = getTrackbarPos("Vmax", "Mask Image"); }
-void onSminChange(int, void*) { smin = getTrackbarPos("Smin", "Mask Image"); }
-void onSmaxChange(int, void*) { smax = getTrackbarPos("Smax", "Mask Image"); }
-void onHueminChange(int, void*) { huemin = getTrackbarPos("Huemin", "Mask Image"); }
-void onHuemaxChange(int, void*) { huemax = getTrackbarPos("Huemax", "Mask Image"); }
-void onminContourChange(int, void*) { minContour = getTrackbarPos("minContour", "Edges"); }
+void onVminChange(int, void*) { vmin = getTrackbarPos("Vmin", "Options"); }
+void onVmaxChange(int, void*) { vmax = getTrackbarPos("Vmax", "Options"); }
+void onSminChange(int, void*) { smin = getTrackbarPos("Smin", "Options"); }
+void onSmaxChange(int, void*) { smax = getTrackbarPos("Smax", "Options"); }
+void onHueminChange(int, void*) { huemin = getTrackbarPos("Huemin", "Options"); }
+void onHuemaxChange(int, void*) { huemax = getTrackbarPos("Huemax", "Options"); }
+void onminContourChange(int, void*) { minContour = getTrackbarPos("minContour", "Options"); }
 
-Eigen::Vector3d deproject_pixel_to_point(const rs2_intrinsics& intrinsics, const rs2::depth_frame& depth_frame, int x, int y) {
-    float depth = depth_frame.get_distance(x, y);
-    float pixel[2] = {(float)x, (float)y};
-    float point[3];
-    rs2_deproject_pixel_to_point(point, &intrinsics, pixel, depth);
-    return Eigen::Vector3d(point[0], point[1], point[2]);
+// Loads HSV and contour parameters from/to an XML configuration file.
+void loadConfigFromXML(const string& filename) {
+    tinyxml2::XMLDocument doc;
+    if (doc.LoadFile(filename.c_str()) != tinyxml2::XML_SUCCESS) {
+        cerr << "Error loading XML file: " << filename << endl;
+        return;
+    }
+
+    tinyxml2::XMLElement* root = doc.FirstChildElement("Config");
+    if (!root) {
+        cerr << "No 'Config' element in XML file: " << filename << endl;
+        return;
+    }
+
+    root->FirstChildElement("vmin")->QueryIntText(&vmin);
+    root->FirstChildElement("vmax")->QueryIntText(&vmax);
+    root->FirstChildElement("smin")->QueryIntText(&smin);
+    root->FirstChildElement("smax")->QueryIntText(&smax);
+    root->FirstChildElement("huemin")->QueryIntText(&huemin);
+    root->FirstChildElement("huemax")->QueryIntText(&huemax);
+    root->FirstChildElement("minContour")->QueryIntText(&minContour);
+
+    cout << "Config loaded: "
+         << "vmin=" << vmin << ", vmax=" << vmax << ", "
+         << "smin=" << smin << ", smax=" << smax << ", "
+         << "huemin=" << huemin << ", huemax=" << huemax << ", "
+         << "minContour=" << minContour << endl;
 }
 
-void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, int& trackObject, Mat& hist, Mat& backproj, Mat& edges, int hsize, const float* phranges) {
+// Saves HSV and contour parameters from/to an XML configuration file.
+void saveConfigToXML(const string& filename) {
+    tinyxml2::XMLDocument doc;
+    tinyxml2::XMLElement* root = doc.NewElement("Config");
+    doc.InsertFirstChild(root);
+
+    tinyxml2::XMLElement* vminElement = doc.NewElement("vmin");
+    vminElement->SetText(vmin);
+    root->InsertEndChild(vminElement);
+
+    tinyxml2::XMLElement* vmaxElement = doc.NewElement("vmax");
+    vmaxElement->SetText(vmax);
+    root->InsertEndChild(vmaxElement);
+
+    tinyxml2::XMLElement* sminElement = doc.NewElement("smin");
+    sminElement->SetText(smin);
+    root->InsertEndChild(sminElement);
+
+    tinyxml2::XMLElement* smaxElement = doc.NewElement("smax");
+    smaxElement->SetText(smax);
+    root->InsertEndChild(smaxElement);
+
+    tinyxml2::XMLElement* hueminElement = doc.NewElement("huemin");
+    hueminElement->SetText(huemin);
+    root->InsertEndChild(hueminElement);
+
+    tinyxml2::XMLElement* huemaxElement = doc.NewElement("huemax");
+    huemaxElement->SetText(huemax);
+    root->InsertEndChild(huemaxElement);
+
+    tinyxml2::XMLElement* minContourElement = doc.NewElement("minContour");
+    minContourElement->SetText(minContour);
+    root->InsertEndChild(minContourElement);
+
+    tinyxml2::XMLError eResult = doc.SaveFile(filename.c_str());
+    if (eResult != tinyxml2::XML_SUCCESS) {
+        cerr << "Error saving XML file: " << filename << endl;
+    }
+}
+
+
+//Converts the input image to HSV format, applies color segmentation, tracks the parcel using CAMShift, and uses opencv image processing functions to obtain a mask that isolates the parcel.
+void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, int& trackObject, Mat& hist, Mat& backproj, Mat& edges, int hsize, const float* phranges, string& mode, Mat& camshiftbox) {
     cvtColor(color, hsv, COLOR_BGR2HSV);
 
     if (trackObject) {
@@ -91,6 +136,24 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
             cerr << "Error: mask is empty after inRange." << endl;
             return;
         }
+
+        Mat element = getStructuringElement(MORPH_RECT, Size(9, 9));
+        dilate(mask, camshiftbox, element);
+        
+        vector<vector<Point>> contoursMask;
+        findContours(camshiftbox, contoursMask, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
+            
+        double maxArea = 0;
+        for (const auto& contour : contoursMask) {
+            Rect rect = boundingRect(contour);
+            double area = rect.area();
+            if (area > maxArea) {
+                maxArea = area;
+                selection = Rect (rect.x + rect.width/4,rect.y + rect.height/4,rect.width/2, rect.height/2);
+            }
+        }
+        
+        trackObject = -1;
 
         int ch[] = {0, 0};
         hue.create(hsv.size(), hsv.depth());
@@ -113,6 +176,7 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
 
         if (!hist.empty()) {
             calcBackProject(&hue, 1, 0, hist, backproj, &phranges);
+            //imshow("backproj",backproj);
             backproj &= mask;
 
             if (backproj.empty()) {
@@ -141,6 +205,7 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
                     drawContours(backproj, contours, (int)i, Scalar(0), FILLED);
                 }
             }
+
             contours.clear();
             findContours(backproj, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
 
@@ -172,6 +237,8 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
     }
 }
 
+
+//Finds and returns the polygon with best fit to the detected contours.
 vector<Point> getBestPolygon(const Mat& edges) {
     vector<vector<Point>> edgeContours;
     findContours(edges, edgeContours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
@@ -191,6 +258,8 @@ vector<Point> getBestPolygon(const Mat& edges) {
     return bestPolygon;
 }
 
+
+//Uses depth information to compute and mark spatial coordinates of parcel corners on the image.
 vector<Eigen::Vector3d> markVertexDistances(Mat& image, const vector<Point>& bestPolygon, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, const rs2::video_stream_profile& color_stream, const rs2::video_stream_profile& depth_stream) {
     rs2_extrinsics extrinsics = depth_stream.get_extrinsics_to(color_stream);
     rs2_intrinsics color_intrinsics = color_stream.get_intrinsics();
@@ -202,7 +271,7 @@ vector<Eigen::Vector3d> markVertexDistances(Mat& image, const vector<Point>& bes
     vector<vector<Point>> contours;
     findContours(maskPolygon, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
 
-    drawContours(maskPolygon, contours, -1, Scalar(0), 10); //I reduce the area of the polygon mask by 10 pixels to restrict more the area and to be sure that the point I'm taking it's on the area od the box
+    drawContours(maskPolygon, contours, -1, Scalar(0), 12); //I reduce the area of the polygon mask by 10 pixels to restrict more the area and to be sure that the point I'm taking it's on the area od the box
     
     vector<Eigen::Vector3d> spatialPoints;
 
@@ -246,6 +315,8 @@ vector<Eigen::Vector3d> markVertexDistances(Mat& image, const vector<Point>& bes
     return spatialPoints;
 }
 
+
+// Calculates vertex, dimensions, and center of the parcel in 3D space.
 void vertexOrthoedro(orthoedro& box) {
     if (box.measuredPoints.size() < 4) {
         throw invalid_argument("At least 5 points are needed to define an orthoedro.");
@@ -256,7 +327,7 @@ void vertexOrthoedro(orthoedro& box) {
         transformedPoints.push_back(box.rotation.transpose() * point);
     }
 
-    // Calcular los puntos extremos en la base transformada
+    // Calculate the maximum and minimum point in the transformed base
     Vector3d minPoint = transformedPoints[0];
     Vector3d maxPoint = transformedPoints[0];
     for (const auto& point : transformedPoints) {
@@ -264,50 +335,51 @@ void vertexOrthoedro(orthoedro& box) {
         maxPoint = maxPoint.cwiseMax(point);
     }
 
-    // Calcular los vértices del ortoedro en la base transformada
-    vector<Vector3d> vertices(8);
-    vertices[0] = Vector3d(minPoint.x(), minPoint.y(), minPoint.z());
-    vertices[1] = Vector3d(maxPoint.x(), minPoint.y(), minPoint.z());
-    vertices[2] = Vector3d(minPoint.x(), maxPoint.y(), minPoint.z());
-    vertices[3] = Vector3d(minPoint.x(), minPoint.y(), maxPoint.z());
-    vertices[4] = Vector3d(maxPoint.x(), maxPoint.y(), minPoint.z());
-    vertices[5] = Vector3d(minPoint.x(), maxPoint.y(), maxPoint.z());
-    vertices[6] = Vector3d(maxPoint.x(), minPoint.y(), maxPoint.z());
-    vertices[7] = Vector3d(maxPoint.x(), maxPoint.y(), maxPoint.z());
+    // Calculate the vertex of the orthoedron in the transformed base
+    vector<Vector3d> vertex(8);
+    vertex[0] = Vector3d(minPoint.x(), minPoint.y(), minPoint.z());
+    vertex[1] = Vector3d(maxPoint.x(), minPoint.y(), minPoint.z());
+    vertex[2] = Vector3d(minPoint.x(), maxPoint.y(), minPoint.z());
+    vertex[3] = Vector3d(minPoint.x(), minPoint.y(), maxPoint.z());
+    vertex[4] = Vector3d(maxPoint.x(), maxPoint.y(), minPoint.z());
+    vertex[5] = Vector3d(minPoint.x(), maxPoint.y(), maxPoint.z());
+    vertex[6] = Vector3d(maxPoint.x(), minPoint.y(), maxPoint.z());
+    vertex[7] = Vector3d(maxPoint.x(), maxPoint.y(), maxPoint.z());
 
-    Vector3d size = vertices[7] - vertices[0];
-    box.refPointRightside = (vertices[0] + vertices[1] + vertices[3] + vertices[6])/4;
-    box.refPointLeftside = (vertices[2] + vertices[4] + vertices[5] + vertices[7])/4;
+    Vector3d size = vertex[7] - vertex[0];
+    box.refPointRightside = (vertex[0] + vertex[1] + vertex[3] + vertex[6])/4;
+    box.refPointLeftside = (vertex[2] + vertex[4] + vertex[5] + vertex[7])/4;
 
-    // Transformar los vértices de vuelta a la base original
-    for (auto& vertex : vertices) {
-        vertex = box.rotation * vertex;
+    // Transform the vertex back to the original base
+    for (auto& point : vertex) {
+        point = box.rotation * point;
     }
-    // Calcular el tamaño de la caja
-    box.vertex = vertices;
+    // Calculate box size
+    box.vertex = vertex;
     box.height = abs(size.z());
     box.length = abs(size.y());
     box.width = abs(size.x());
-    box.center = (vertices[0] + vertices[1] + vertices[2] + vertices[3] + vertices[4] + vertices[5] + vertices[6] + vertices[7])/8;
+    box.center = (vertex[0] + vertex[1] + vertex[2] + vertex[3] + vertex[4] + vertex[5] + vertex[6] + vertex[7])/8;
     box.refPointRightside = box.rotation * box.refPointRightside;
     box.refPointLeftside = box.rotation * box.refPointLeftside;
 }
 
-Vector3d calculateLongestVector(const vector<Vector3d>& vertices) {
+//This function iterates through the list of vertex, computes the sum of vectors for each sequential triplet, and returns the vector sum with the longest magnitude. It is used in `calcBoxOrientation` to determine the primary vector direction for orientation calculation.
+Vector3d calculateLongestVector(const vector<Vector3d>& vertex) {
     Vector3d sum;
     Vector3d sol(0, 0, 0);
     double length = 0;
-    for (int i = 0; i < (vertices.size()); i++){
+    for (int i = 0; i < (vertex.size()); i++){
         int j = i;
         int k = i + 1;
         int l = i + 2;
-        if (k >= vertices.size()){
-            k = k - vertices.size();
+        if (k >= vertex.size()){
+            k = k - vertex.size();
         }
-        if (l >= vertices.size()){
-            l = l - vertices.size();
+        if (l >= vertex.size()){
+            l = l - vertex.size();
         }
-        sum = vertices[j]+vertices[k]+vertices[l];
+        sum = vertex[j]+vertex[k]+vertex[l];
         if (sum.norm() > length){
             length = sum.norm();
             sol = sum;
@@ -316,18 +388,19 @@ Vector3d calculateLongestVector(const vector<Vector3d>& vertices) {
     return sol;
 }
 
-// Función para separar los vértices según su posición relativa al vector promedio
-void separateVertices(const vector<Vector3d>& vertices, Vector3d& avgVector, vector<Vector3d>& sideA, vector<Vector3d>& sideB, Vector3d centroid) {
-    for (const auto& vertex : vertices) {
-        double dotProduct = vertex.dot(avgVector);
+//This function categorizes vertex into two groups (`sideA` and `sideB`) based on their dot product with `avgVector`. vertex with a positive dot product are added to `sideA`, while those with a non-positive dot product are added to `sideB`. It assists in organizing vertex for further processing in `calcBoxOrientation`.
+void separatevertex(const vector<Vector3d>& vertex, Vector3d& avgVector, vector<Vector3d>& sideA, vector<Vector3d>& sideB, Vector3d centroid) {
+    for (const auto& point : vertex) {
+        double dotProduct = point.dot(avgVector);
         if (dotProduct > 0) {
-            sideA.push_back(vertex + centroid);
+            sideA.push_back(point + centroid);
         } else {
-            sideB.push_back(vertex + centroid);
+            sideB.push_back(point + centroid);
         }
     }
 }
 
+//Determines the rotational matrix for aligning the parcel with the camera's coordinate system.
 void calcBoxOrientation(orthoedro& box) {
     // Calculate the centroid of the polygon
     Eigen::Vector3d centroid(0, 0, 0);
@@ -360,7 +433,7 @@ void calcBoxOrientation(orthoedro& box) {
     Vector3d avgVector = calculateLongestVector(vectorVertexToCenter);
 
     vector<Vector3d> sideA, sideB;
-    separateVertices(vectorVertexToCenter, avgVector, sideA, sideB, centroid);
+    separatevertex(vectorVertexToCenter, avgVector, sideA, sideB, centroid);
     vector<Vector3d> RightSide, LeftSide;
     double xmeanSideA, xmeanSideB;
     for (const auto& vertex : sideA){
@@ -406,10 +479,6 @@ void calcBoxOrientation(orthoedro& box) {
     box.measuredPoints = RightSide;
     for (const auto& point : LeftSide){
         box.measuredPoints.push_back(point); 
-    }
-
-    for (const auto& point : box.measuredPoints){
-        cout << point.transpose() << endl; 
     }
 
     Eigen::Vector3d x;
@@ -485,31 +554,28 @@ void calcBoxOrientation(orthoedro& box) {
 
 }
 
-void drawVertices(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
-    // Proyectar y dibujar los vértices del ortoedro
+void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
+
     for (size_t i = 0; i < box.vertex.size(); ++i) {
         const auto& vertex = box.vertex[i];
 
-        // Proyectar cada vértice del ortoedro a coordenadas de píxeles
+
         float point3D[3] = { static_cast<float>(vertex.x()), static_cast<float>(vertex.y()), static_cast<float>(vertex.z()) };
         float pixel[2];
         rs2_project_point_to_pixel(pixel, &intr, point3D);
 
-        // Determinar el color del vértice
         Scalar color;
         if (i == 0) {
-            color = Scalar(0, 0, 255); // Rojo para el vértice 0
+            color = Scalar(0, 0, 255); 
         } else if (i == 7) {
-            color = Scalar(255, 0, 0); // Azul para el vértice 7
+            color = Scalar(255, 0, 0); 
         } else {
-            color = Scalar(0, 255, 0); // Verde para los demás vértices
+            color = Scalar(0, 255, 0); 
         }
 
-        // Dibujar cada vértice en la nueva imagen
         Point vertexPoint(static_cast<int>(pixel[0]), static_cast<int>(pixel[1]));
         circle(image, vertexPoint, 5, color, FILLED);
 
-        // Formatear las coordenadas del vértice con 2 decimales
         stringstream ss;
         ss << fixed << setprecision(2);
         ss << "(" << vertex.x() << "," << vertex.y() << "," << vertex.z() << ")";
@@ -517,7 +583,6 @@ void drawVertices(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& in
         putText(image, ss.str(), vertexPoint + Point(10, 0), FONT_HERSHEY_SIMPLEX, 0.5, color, 2);
     }
 
-    // Función lambda para proyectar y dibujar puntos de referencia
     auto drawPoint = [&](const Eigen::Vector3d& point, const cv::Scalar& color) {
         float point3D[3] = { (float)point.x(), (float)point.y(), (float)point.z() };
         float pixel[2];
@@ -529,13 +594,28 @@ void drawVertices(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& in
         cv::putText(image, oss.str(), refPoint + cv::Point(10, 0), cv::FONT_HERSHEY_SIMPLEX, 0.5, color, 2);
     };
 
-    // Dibujar puntos de referencia en diferentes colores
-    drawPoint(box.refPointRightside, cv::Scalar(255, 0, 128)); // Morado para refPointRightSide
-    drawPoint(box.refPointLeftside, cv::Scalar(203, 192, 255));  // Rosa para refPointLeftSide
-    drawPoint(box.center, cv::Scalar(0, 255, 255));          // Amarillo para el centro
+    // Draw ref points in different colors
+    drawPoint(box.refPointRightside, cv::Scalar(255, 0, 128)); // refPointRightSide
+    drawPoint(box.refPointLeftside, cv::Scalar(203, 192, 255));  // refPointLeftSide
+    drawPoint(box.center, cv::Scalar(0, 255, 255));          // center
 }
 
-int main() {
+int main(int argc, char* argv[]) {
+    if (argc < 2) {
+        cout << "Usage: " << argv[0] << " <mode>" << endl;
+        cout << "mode: auto or manual" << endl;
+        return -1;
+    }
+
+    string mode(argv[1]);
+
+    if (mode != "auto" && mode != "manual") {
+        cerr << "Invalid mode. Use 'auto' or 'manual'." << endl;
+        return -1;
+    }
+
+    loadConfigFromXML(xmlFileName);
+
     rs2::pipeline pipe;
     rs2::config cfg;
     cfg.enable_stream(RS2_STREAM_COLOR, 640, 480, RS2_FORMAT_BGR8, 30);
@@ -543,26 +623,34 @@ int main() {
     pipe.start(cfg);
 
     rs2::align align_to_color(RS2_STREAM_COLOR);
-    namedWindow("Color Image", WINDOW_AUTOSIZE);
-    namedWindow("Mask Image", WINDOW_AUTOSIZE);
-    namedWindow("Edges", WINDOW_AUTOSIZE);
-    namedWindow("Depth Image", WINDOW_AUTOSIZE);
+    if (mode=="manual"){
+ 
+        namedWindow("View", WINDOW_AUTOSIZE);
+        moveWindow("View", 80, 0);
 
-    setMouseCallback("Color Image", onMouse, 0);
-    createTrackbar("Vmin", "Mask Image", NULL, 256, onVminChange);
-    createTrackbar("Vmax", "Mask Image", NULL, 256, onVmaxChange);
-    createTrackbar("Smin", "Mask Image", NULL, 256, onSminChange);
-    createTrackbar("Smax", "Mask Image", NULL, 256, onSmaxChange);
-    createTrackbar("Huemin", "Mask Image", NULL, 256, onHueminChange);
-    createTrackbar("Huemax", "Mask Image", NULL, 256, onHuemaxChange);
-    createTrackbar("minContour", "Edges", NULL, 10000, onminContourChange);
+        namedWindow("Options", WINDOW_AUTOSIZE);
 
-    Mat hsv, hue, mask, hist, backproj;
+    
+        createTrackbar("Vmin", "Options", NULL, 256, onVminChange);
+        createTrackbar("Vmax", "Options", NULL, 256, onVmaxChange);
+        createTrackbar("Smin", "Options", NULL, 256, onSminChange);
+        createTrackbar("Smax", "Options", NULL, 256, onSmaxChange);
+        createTrackbar("Huemin", "Options", NULL, 256, onHueminChange);
+        createTrackbar("Huemax", "Options", NULL, 256, onHuemaxChange);
+        createTrackbar("minContour", "Options", NULL, 20000, onminContourChange);
+
+        moveWindow("Options", 1300, 0);
+
+    }
+
+    trackObject = -1;
+    
+    Mat hsv, hue, mask, hist, backproj, camshiftbox;
     Rect trackWindow;
     int hsize = 16;
     float phranges[] = {0, 180};
 
-    while (waitKey(1) != 27) {
+    while (true) {
         rs2::frameset frames = pipe.wait_for_frames();
         frames = align_to_color.process(frames);
 
@@ -579,8 +667,8 @@ int main() {
         rs2_intrinsics intr = color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics();
         Mat edges = Mat::zeros(image.size(), CV_8UC1);
 
-        Mat newImage = Mat::zeros(image.size(), CV_8UC3);
-        image.copyTo(newImage);
+        Mat vertexImage = Mat::zeros(image.size(), CV_8UC3);
+        image.copyTo(vertexImage);
 
         if (image.empty()) {
             cerr << "Error: image is empty." << endl;
@@ -592,18 +680,11 @@ int main() {
             continue;
         }
 
-        processImage(image, hsv, hue, mask, trackWindow, trackObject, hist, backproj, edges, hsize, phranges);
+        processImage(image, hsv, hue, mask, trackWindow, trackObject, hist, backproj, edges, hsize, phranges, mode, camshiftbox);
 
-        cv::imshow("Color Image", image);
 
-        if (!mask.empty()) {
-            cv::imshow("Mask Image", mask);
-        }
 
         if (!hist.empty()) {
-            if (!edges.empty()) {
-                cv::imshow("Edges", edges);
-            }
 
             vector<Point> bestPolygon = getBestPolygon(edges);
             orthoedro box;
@@ -615,13 +696,11 @@ int main() {
                     try {
                         calcBoxOrientation(box);
                         vertexOrthoedro(box);
-                        double volume = abs(box.width*box.length*box.height);
-                        cout << "volume:" << volume << endl;
                         cout << "length:" << abs(box.length) << endl;
                         cout << "width:" << abs(box.width) << endl;
                         cout << "height:" << abs(box.height) << endl;
                         std::cout << std::fixed << std::setprecision(2);
-                        std::cout << "Vector centro funcion conjunta: (" << box.center.x() << ", " << box.center.y() << ", " << box.center.z() << ")" << std::endl;
+                        std::cout << "Center: (" << box.center.x() << ", " << box.center.y() << ", " << box.center.z() << ")" << std::endl;
                         // Projecting the center of the orthoedro to pixel coordinates
                         float point3D[3] = { (float)box.center.x(), (float)box.center.y(), (float)box.center.z() };
                         float pixel[2];
@@ -632,12 +711,8 @@ int main() {
                         circle(image, centerPoint, 5, Scalar(0, 0, 255), FILLED);
                         putText(image, "Center", centerPoint + Point(10, 0), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
 
-                        // Crear una nueva imagen para representar los vértices
-
-                        drawVertices(newImage, box, intr);
-
-                        // Mostrar la nueva imagen con los vértices proyectados
-                        imshow("Vertices Image", newImage);
+                        drawVertex(vertexImage, box, intr);
+                        
 
                     } catch (const std::exception& e) {
                         std::cerr << "Error calculating orthoedro's center: " << e.what() << std::endl;
@@ -646,20 +721,49 @@ int main() {
             }
         }
 
+
+        char c = (char)waitKey(10);
+        if (c == 27) break;
+        if (c == 's') { // 's' to save the configuration
+            saveConfigToXML(xmlFileName);
+            cout << "Configuración guardada en " << xmlFileName << endl;
+        }
+
+
         Mat depth_image_8bit;
         depth_image.convertTo(depth_image_8bit, CV_8U, 255.0 / 1000); // Adjust scaling factor if needed
         cv::applyColorMap(depth_image_8bit, depth_image_8bit, COLORMAP_JET); // Apply color map to visualize depth data better
 
-        if (!depth_image_8bit.empty()) {
-            cv::imshow("Depth Image", depth_image_8bit);
-        } else {
-            cerr << "Error: depth image 8-bit is empty." << endl;
-        }
+        if (!depth_image_8bit.empty() && mode == "manual") {
+            //cv::imshow("Depth Image", depth_image_8bit);
+        } 
+        
         if (selectObject && selection.width > 0 && selection.height > 0) {
             Mat roi(image, selection);
             bitwise_not(roi, roi);
         }
-        cv::imshow("Color Image", image);
+        
+        if (mode == "manual"){
+            cv::Mat view1, view2, view;
+            cv::cvtColor(edges, edges, cv::COLOR_GRAY2BGR);
+            cv::cvtColor(mask, mask, cv::COLOR_GRAY2BGR);
+            cv::cvtColor(camshiftbox, camshiftbox, cv::COLOR_GRAY2BGR);
+
+            Scalar color(0, 0, 255);
+
+            rectangle(camshiftbox, selection, color, 2);
+
+            cv::vconcat(image, camshiftbox, view1);
+            cv::vconcat(edges, vertexImage, view2);
+            cv::hconcat(view1, view2, view);
+
+            cv::Size newSize(1220, 915);
+            cv::resize(view, view, newSize, cv::INTER_NEAREST);
+            cv::resize(mask, mask, newSize/2, cv::INTER_NEAREST);
+
+            cv::imshow("View", view);
+            cv::imshow("Options", mask);
+        }
     }
 
     return 0;

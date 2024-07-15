@@ -7,7 +7,8 @@ This software module enables the detection and localization of a parcel, such as
 - [Installation](#installation)
 - [Usage](#usage)
   - [Running the Program](#running-the-program)
-  - [Adjusting Parameters](#adjusting-parameters)
+  - [Manual mode](#manual-mode)
+  - [Automatic mode](#automatic-mode)
 - [Functions Overview](#functions-overview)
   - [Core Functions](#core-functions)
     - [processImage](#processimage)
@@ -15,13 +16,13 @@ This software module enables the detection and localization of a parcel, such as
     - [markVertexDistances](#markvertexdistances)
     - [vertexOrthoedro](#vertexorthoedro)
     - [calcBoxOrientation](#calcboxorientation)
-    - [drawVertices](#drawvertices)
+    - [drawVertex](#drawvertex)
   - [Utility Functions](#utility-functions)
     - [isValidPoint](#isvalidpoint)
     - [loadConfigFromXML and saveConfigToXML](#loadconfigfromxml-and-saveconfigtoxml)
     - [adjustROI](#adjustroi)
     - [calculateLongestVector](#calculatelongestvector)
-    - [separateVertices](#separatevertices)
+    - [separateVertex](#separatevertex)
 - [Main Function Structure](#main-function-structure)
 
 ## Prerequisites
@@ -47,15 +48,15 @@ This software module enables the detection and localization of a parcel, such as
 
 ## Usage
 
-
-
 ### Running the Program
 
 To run the program, execute the following command from the `build` directory:
 ```bash
-./object_detection <mode>
+./RealSenseBoxDetection <mode>
 ```
 Replace <mode> with manual or auto to select the desired mode of operation.
+
+In order to stop the program press the key "esc".
 
 ### Manual mode
 
@@ -68,10 +69,20 @@ You can adjust the following parameters using the trackbars in the GUI:
 - `Huemin` and `Huemax`: Minimum and maximum values for the H channel in HSV color space.
 - `minContour`: Minimum contour area to consider for object detection.
 
+To start the program in manual mode:
+
+```bash
+./RealSenseBoxDetection manual
+```
+
 ### Automatic mode
-In automatic mode, the parameters for HSV and minContour are loaded from the Config.xml file. This mode does not allow you to modify these parameters through the GUI. Instead, it provides an image showing the vertices of the parcel on the color image to check that the detection is working properly. Regardless of the mode, the terminal will display the sizes of the parcel and the vector from the camera to the center of the box in box coordinates.
+In automatic mode, the parameters for HSV and minContour are loaded from the Config.xml file. This mode does not allow you to modify these parameters through the GUI. Instead, it provides an image showing the vertex of the parcel on the color image to check that the detection is working properly. Regardless of the mode, the terminal will display the sizes of the parcel and the vector from the camera to the center of the box in box coordinates.
 
 To start the program in automatic mode:
+
+```bash
+./RealSenseBoxDetection auto
+```
 
 ## Functions Overview
 
@@ -89,7 +100,7 @@ To start the program in automatic mode:
   - `hsize`, `phranges`: Parameters for histogram calculations.
   - `mode`: Operating mode ('manual' or 'automatic').
   - `camshiftbox`: Mask image used in CAMShift processing.
-- **Description:** Converts the input image to HSV format, applies color segmentation, tracks the parcel using CAMShift, and uses opencv image processing functions to obatain a mask that isolates the parcel.
+- **Description:** Converts the input image to HSV format, applies color segmentation, tracks the parcel using CAMShift, and uses opencv image processing functions to obtain a mask that isolates the parcel.
 
 #### getBestPolygon
 
@@ -109,10 +120,10 @@ To start the program in automatic mode:
 
 #### vertexOrthoedro
 
-- **Purpose:** Computes vertices and dimensions of an orthoedron.
+- **Purpose:** Computes vertex and dimensions of an orthoedron.
 - **Parameters:**
   - `box`: Structure containing measured points, rotation matrix, and dimensions.
-- **Description:** Calculates vertices, dimensions, and center of the parcel in 3D space.
+- **Description:** Calculates vertex, dimensions, and center of the parcel in 3D space.
 
 #### calcBoxOrientation
 
@@ -121,14 +132,14 @@ To start the program in automatic mode:
   - `box`: Structure containing measured points and rotation matrix.
 - **Description:** Determines the rotational matrix for aligning the parcel with the camera's coordinate system.
 
-#### drawVertices
+#### drawVertex
 
-- **Purpose:** Draws projected vertices and reference points on the image.
+- **Purpose:** Draws projected vertex and reference points on the image.
 - **Parameters:**
-  - `image`: Output image with projected vertices.
-  - `box`: Structure containing vertices and rotation matrix.
+  - `image`: Output image with projected vertex.
+  - `box`: Structure containing vertex and rotation matrix.
   - `intr`: RealSense camera intrinsics.
-- **Description:** Projects and visualizes parcel vertices and reference points on the image.
+- **Description:** Projects and visualizes parcel vertex and reference points on the image.
 
 ### Utility Functions
 
@@ -159,19 +170,19 @@ To start the program in automatic mode:
 
 - **Purpose:** Finds the longest vector sum among sequential triplets in a given set of 3D vectors.
 - **Parameters:**
-  - `vertices`: A vector containing 3D points (`Eigen::Vector3d`) representing vertices.
+  - `vertex`: A vector containing 3D points (`Eigen::Vector3d`) representing vertex.
 - **Returns:** The longest vector sum found among the sequential triplets.
-- **Description:** This function iterates through the list of vertices, computes the sum of vectors for each sequential triplet, and returns the vector sum with the longest magnitude. It is used in `calcBoxOrientation` to determine the primary vector direction for orientation calculation.
+- **Description:** This function iterates through the list of vertex, computes the sum of vectors for each sequential triplet, and returns the vector sum with the longest magnitude. It is used in `calcBoxOrientation` to determine the primary vector direction for orientation calculation.
 
-#### separateVertices
+#### separateVertex
 
-- **Purpose:** Separates vertices into two groups based on their relative position to an average vector.
+- **Purpose:** Separates vertex into two groups based on their relative position to an average vector.
 - **Parameters:**
-  - `vertices`: A vector containing 3D points (`Eigen::Vector3d`) representing vertices.
+  - `vertex`: A vector containing 3D points (`Eigen::Vector3d`) representing vertex.
   - `avgVector`: Average vector direction used for separation.
-  - `sideA`, `sideB`: Output vectors to store vertices separated into two groups.
+  - `sideA`, `sideB`: Output vectors to store vertex separated into two groups.
   - `centroid`: Centroid point around which separation is performed.
-- **Description:** This function categorizes vertices into two groups (`sideA` and `sideB`) based on their dot product with `avgVector`. Vertices with a positive dot product are added to `sideA`, while those with a non-positive dot product are added to `sideB`. It assists in organizing vertices for further processing in `calcBoxOrientation`.
+- **Description:** This function categorizes vertex into two groups (`sideA` and `sideB`) based on their dot product with `avgVector`. vertex with a positive dot product are added to `sideA`, while those with a non-positive dot product are added to `sideB`. It assists in organizing vertex for further processing in `calcBoxOrientation`.
 
   
 
