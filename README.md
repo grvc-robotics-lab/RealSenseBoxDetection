@@ -78,23 +78,23 @@ You can adjust the following parameters using the trackbars in the GUI:
   - `hsize`, `phranges`: Parameters for histogram calculations.
   - `mode`: Operating mode ('manual' or 'automatic').
   - `camshiftbox`: Mask image used in CAMShift processing.
-- **Description:** Converts the input image to HSV format, applies color segmentation, tracks the parcel using CAMShift, and computes its spatial orientation.
+- **Description:** Converts the input image to HSV format, applies color segmentation, tracks the parcel using CAMShift, and uses opencv image processing functions to obatain a mask that isolates the parcel.
 
 #### getBestPolygon
 
 - **Purpose:** Extracts the best polygon approximation from edge-detected contours.
 - **Parameters:**
   - `edges`: Binary edge-detected image.
-- **Description:** Finds and returns the polygon with the smallest area from the detected contours.
+- **Description:** Finds and returns the polygon with best fit to the detected contours.
 
 #### markVertexDistances
 
-- **Purpose:** Computes 3D spatial points corresponding to the vertices of the parcel.
+- **Purpose:** Computes 3D spatial points corresponding to the vertex of the parcel.
 - **Parameters:**
   - `image`: BGR image for displaying depth information.
   - `bestPolygon`: Best polygon approximating the parcel.
   - `depth_frame`, `intr`, `color_stream`, `depth_stream`: RealSense camera parameters.
-- **Description:** Uses depth information to compute and mark spatial coordinates of parcel vertices on the image.
+- **Description:** Uses depth information to compute and mark spatial coordinates of parcel corners on the image.
 
 #### vertexOrthoedro
 
