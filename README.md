@@ -46,14 +46,20 @@ This software module enables the detection and localization of a parcel, such as
     make
 
 ## Usage
+
+
+
 ### Running the Program
 
 To run the program, execute the following command from the `build` directory:
 ```bash
-./object_detection
+./object_detection <mode>
 ```
+Replace <mode> with manual or auto to select the desired mode of operation.
 
-### Adjusting Parameters
+### Manual mode
+
+The manual mode is designed for parameter calibration. In this mode, you will get a graphical interface to configure the HSV parameters and minContour. You can adjust these parameters using the trackbars provided. Once you have configured the parameters, you can save them into the XML file Config.xml by pressing the letter s. This mode allows you to fine-tune the parameters to ensure accurate parcel detection.
 
 You can adjust the following parameters using the trackbars in the GUI:
 
@@ -61,6 +67,11 @@ You can adjust the following parameters using the trackbars in the GUI:
 - `Smin` and `Smax`: Minimum and maximum values for the S channel in HSV color space.
 - `Huemin` and `Huemax`: Minimum and maximum values for the H channel in HSV color space.
 - `minContour`: Minimum contour area to consider for object detection.
+
+### Automatic mode
+In automatic mode, the parameters for HSV and minContour are loaded from the Config.xml file. This mode does not allow you to modify these parameters through the GUI. Instead, it provides an image showing the vertices of the parcel on the color image to check that the detection is working properly. Regardless of the mode, the terminal will display the sizes of the parcel and the vector from the camera to the center of the box in box coordinates.
+
+To start the program in automatic mode:
 
 ## Functions Overview
 
