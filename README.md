@@ -75,9 +75,6 @@ To start the program in manual mode:
 ./RealSenseBoxDetection manual
 ```
 
-![Uploading Screenshot from 2024-07-15 17-42-49.png…]()
-
-
 ### Automatic mode
 In automatic mode, the parameters for HSV and minContour are loaded from the Config.xml file. This mode does not allow you to modify these parameters through the GUI. Instead, it provides an image showing the vertex of the parcel on the color image to check that the detection is working properly. Regardless of the mode, the terminal will display the sizes of the parcel and the vector from the camera to the center of the box in box coordinates.
 
