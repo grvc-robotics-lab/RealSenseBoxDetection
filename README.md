@@ -69,7 +69,7 @@ You can adjust the following parameters using the trackbars in the GUI:
 - `Huemin` and `Huemax`: Minimum and maximum values for the H channel in HSV color space.
 - `minContour`: Minimum contour area to consider for object detection.
 
-![Uploading GUI.png…]()
+![GUI](GUI.png)
 
 To start the program in manual mode:
 
