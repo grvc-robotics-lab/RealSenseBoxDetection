@@ -37,6 +37,9 @@ This software module enables the detection and localization of a parcel, such as
     ```bash
     git clone https://github.com/JorgePogue37/RealSenseBoxDetection
     cd RealSenseBoxDetection
+    cd include
+    git clone https://github.com/leethomason/tinyxml2
+    cd ..
     ```
 
 2. Build the project:
