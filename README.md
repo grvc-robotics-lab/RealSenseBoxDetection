@@ -37,6 +37,9 @@ This software module enables the detection and localization of a parcel, such as
     ```bash
     git clone https://github.com/JorgePogue37/RealSenseBoxDetection
     cd RealSenseBoxDetection
+    cd include
+    git clone https://github.com/leethomason/tinyxml2
+    cd ..
     ```
 
 2. Build the project:
@@ -68,6 +71,8 @@ You can adjust the following parameters using the trackbars in the GUI:
 - `Smin` and `Smax`: Minimum and maximum values for the S channel in HSV color space.
 - `Huemin` and `Huemax`: Minimum and maximum values for the H channel in HSV color space.
 - `minContour`: Minimum contour area to consider for object detection.
+
+![GUI](GUI.png)
 
 To start the program in manual mode:
 
