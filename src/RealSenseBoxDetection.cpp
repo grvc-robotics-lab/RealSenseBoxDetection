@@ -9,6 +9,23 @@ using namespace cv;
 using namespace std;
 using namespace Eigen;
 
+
+
+// Time library
+#include <sys/time.h>
+
+#include <deque>
+#include <fstream>
+#define MAX_POINTS 100000
+
+// Función para obtener el tiempo actual en milisegundos
+long long getCurrentTimeInMilliseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec) * 1000LL+ (tv.tv_usec / 1000);  // Convertir a segundos
+}
+
+
 Mat image;
 Rect selection;
 bool selectObject = false;
@@ -133,16 +150,16 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
                 Scalar(huemax, smax, vmax), mask);
 
         if (mask.empty()) {
-            cerr << "Error: mask is empty after inRange." << endl;
+            cerr << "Error: mask is emptyDownloads after inRange." << endl;
             return;
         }
 
         Mat element = getStructuringElement(MORPH_RECT, Size(9, 9));
         dilate(mask, camshiftbox, element);
-        
+
         vector<vector<Point>> contoursMask;
         findContours(camshiftbox, contoursMask, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-            
+
         double maxArea = 0;
         for (const auto& contour : contoursMask) {
             Rect rect = boundingRect(contour);
@@ -152,7 +169,7 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
                 selection = Rect (rect.x + rect.width/4,rect.y + rect.height/4,rect.width/2, rect.height/2);
             }
         }
-        
+
         trackObject = -1;
 
         int ch[] = {0, 0};
@@ -227,8 +244,8 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
             roiRect = adjustROI(roiRect, backproj.size());
             int cols = backproj.cols, rows = backproj.rows;
             roiRect = roiRect & Rect(0, 0, cols, rows);
-            Mat roi(backproj, roiRect);
-            roi.copyTo(edges(roiRect));
+            //Mat roi(backproj, roiRect);
+            backproj.copyTo(edges);
 
             vector<vector<Point>> edgeContours;
             findContours(edges, edgeContours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
@@ -272,7 +289,7 @@ vector<Eigen::Vector3d> markVertexDistances(Mat& image, const vector<Point>& bes
     findContours(maskPolygon, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
 
     drawContours(maskPolygon, contours, -1, Scalar(0), 12); //I reduce the area of the polygon mask by 10 pixels to restrict more the area and to be sure that the point I'm taking it's on the area od the box
-    
+
     vector<Eigen::Vector3d> spatialPoints;
 
     for (const auto& vertex : bestPolygon) {
@@ -401,7 +418,7 @@ void separatevertex(const vector<Vector3d>& vertex, Vector3d& avgVector, vector<
 }
 
 //Determines the rotational matrix for aligning the parcel with the camera's coordinate system.
-void calcBoxOrientation(orthoedro& box) {
+int calcBoxOrientation(orthoedro& box) {
     // Calculate the centroid of the polygon
     Eigen::Vector3d centroid(0, 0, 0);
 
@@ -414,7 +431,7 @@ void calcBoxOrientation(orthoedro& box) {
 
     centroid = (minPoint + maxPoint)/2;
 
-    // Calculate the angle 
+    // Calculate the angle
     auto angleToVertical = [&](const Eigen::Vector3d& point) {
         Eigen::Vector3d vec = point - centroid;
         return atan2(vec.x(), vec.y());
@@ -437,11 +454,11 @@ void calcBoxOrientation(orthoedro& box) {
     vector<Vector3d> RightSide, LeftSide;
     double xmeanSideA, xmeanSideB;
     for (const auto& vertex : sideA){
-        xmeanSideA += vertex.x(); 
+        xmeanSideA += vertex.x();
     }
     xmeanSideA = xmeanSideA / sideA.size();
     for (const auto& vertex : sideB){
-        xmeanSideB += vertex.x(); 
+        xmeanSideB += vertex.x();
     }
     xmeanSideB = xmeanSideB / sideB.size();
 
@@ -454,7 +471,7 @@ void calcBoxOrientation(orthoedro& box) {
         LeftSide = sideA;
     }
 
-    // Calculate the angle 
+    // Calculate the angle
     auto angleRight = [&](const Eigen::Vector3d& point) {
         Eigen::Vector3d vec = point - centroid;
         return atan2(vec.y(), vec.x());
@@ -475,10 +492,10 @@ void calcBoxOrientation(orthoedro& box) {
         return angleLeft(a) < angleLeft(b);
     });
 
-    box.measuredPoints.empty();
+    box.measuredPoints.clear();
     box.measuredPoints = RightSide;
     for (const auto& point : LeftSide){
-        box.measuredPoints.push_back(point); 
+        box.measuredPoints.push_back(point);
     }
 
     Eigen::Vector3d x;
@@ -502,7 +519,7 @@ void calcBoxOrientation(orthoedro& box) {
                 x = ((box.measuredPoints[1]-box.measuredPoints[2])+(box.measuredPoints[5]-box.measuredPoints[4]))/2;
             }
             else{
-                x = ((box.measuredPoints[1]-box.measuredPoints[2])+(box.measuredPoints[4]-box.measuredPoints[3]))/2;    
+                x = ((box.measuredPoints[1]-box.measuredPoints[2])+(box.measuredPoints[4]-box.measuredPoints[3]))/2;
             }
         }
         else{
@@ -510,7 +527,7 @@ void calcBoxOrientation(orthoedro& box) {
                 x = ((box.measuredPoints[0]-box.measuredPoints[1])+(box.measuredPoints[5]-box.measuredPoints[4]))/2;
             }
             else{
-                x = ((box.measuredPoints[0]-box.measuredPoints[1])+(box.measuredPoints[4]-box.measuredPoints[3]))/2;    
+                x = ((box.measuredPoints[0]-box.measuredPoints[1])+(box.measuredPoints[4]-box.measuredPoints[3]))/2;
             }
         }
         y = ((box.measuredPoints[3]-box.measuredPoints[2])+(box.measuredPoints[5]-box.measuredPoints[0]))/2;
@@ -543,6 +560,7 @@ void calcBoxOrientation(orthoedro& box) {
         }
         else{
             cout << "Not enough data to calculate the orientation" << endl;
+            return 0;
         }
     }
     x.normalize();
@@ -551,7 +569,7 @@ void calcBoxOrientation(orthoedro& box) {
     box.rotation.col(0) = x;
     box.rotation.col(1) = y;
     box.rotation.col(2) = z;
-
+    return 1;
 }
 
 void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
@@ -566,11 +584,11 @@ void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr
 
         Scalar color;
         if (i == 0) {
-            color = Scalar(0, 0, 255); 
+            color = Scalar(0, 0, 255);
         } else if (i == 7) {
-            color = Scalar(255, 0, 0); 
+            color = Scalar(255, 0, 0);
         } else {
-            color = Scalar(0, 255, 0); 
+            color = Scalar(0, 255, 0);
         }
 
         Point vertexPoint(static_cast<int>(pixel[0]), static_cast<int>(pixel[1]));
@@ -600,7 +618,34 @@ void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr
     drawPoint(box.center, cv::Scalar(0, 255, 255));          // center
 }
 
+// Function to apply a moving average filter
+Eigen::Vector3d movingAverageFilter(const std::deque<Eigen::Vector3d>& points) {
+    Eigen::Vector3d addition(0, 0, 0);
+
+    int window = 10;
+    int count = 0;
+    for (int i = std::max(0, static_cast<int>(points.size()) - window); i < points.size(); ++i) {
+        addition += points[i];
+        count++;
+    }
+
+    return addition / count;
+}
+
 int main(int argc, char* argv[]) {
+    std::ofstream logFile;
+
+    // A deque is used to save the data of the points and their temporary mark
+    std::deque<Eigen::Vector3d> pointsDequeL;
+    std::deque<Eigen::Vector3d> pointsDequeR;
+    std::deque<long long> timeDeque;
+
+    std::deque<Eigen::Vector3d> filteredPointL;
+    std::deque<Eigen::Vector3d> filteredPointR;
+
+    std::deque<Eigen::Vector3d> refilteredPointL;
+    std::deque<Eigen::Vector3d> refilteredPointR;
+
     if (argc < 2) {
         cout << "Usage: " << argv[0] << " <mode>" << endl;
         cout << "mode: auto or manual" << endl;
@@ -624,13 +669,13 @@ int main(int argc, char* argv[]) {
 
     rs2::align align_to_color(RS2_STREAM_COLOR);
     if (mode=="manual"){
- 
+
         namedWindow("View", WINDOW_AUTOSIZE);
         moveWindow("View", 80, 0);
 
         namedWindow("Options", WINDOW_AUTOSIZE);
 
-    
+
         createTrackbar("Vmin", "Options", NULL, 256, onVminChange);
         createTrackbar("Vmax", "Options", NULL, 256, onVmaxChange);
         createTrackbar("Smin", "Options", NULL, 256, onSminChange);
@@ -644,11 +689,17 @@ int main(int argc, char* argv[]) {
     }
 
     trackObject = -1;
-    
+
     Mat hsv, hue, mask, hist, backproj, camshiftbox;
     Rect trackWindow;
     int hsize = 16;
     float phranges[] = {0, 180};
+	
+	// Timing variables
+	struct timeval tini;
+	struct timeval tend;
+	double delta_t = 0;
+
 
     while (true) {
         rs2::frameset frames = pipe.wait_for_frames();
@@ -682,8 +733,6 @@ int main(int argc, char* argv[]) {
 
         processImage(image, hsv, hue, mask, trackWindow, trackObject, hist, backproj, edges, hsize, phranges, mode, camshiftbox);
 
-
-
         if (!hist.empty()) {
 
             vector<Point> bestPolygon = getBestPolygon(edges);
@@ -694,26 +743,66 @@ int main(int argc, char* argv[]) {
                 box.measuredPoints = markVertexDistances(image, bestPolygon, depth_frame, color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics(), color_frame.get_profile().as<rs2::video_stream_profile>(), depth_frame.get_profile().as<rs2::video_stream_profile>());
                 if (!box.measuredPoints.empty()) {
                     try {
-                        calcBoxOrientation(box);
-                        vertexOrthoedro(box);
-                        cout << "length:" << abs(box.length) << endl;
-                        cout << "width:" << abs(box.width) << endl;
-                        cout << "height:" << abs(box.height) << endl;
-                        std::cout << std::fixed << std::setprecision(2);
-                        std::cout << "Center: (" << box.center.x() << ", " << box.center.y() << ", " << box.center.z() << ")" << std::endl;
-                        // Projecting the center of the orthoedro to pixel coordinates
-                        float point3D[3] = { (float)box.center.x(), (float)box.center.y(), (float)box.center.z() };
-                        float pixel[2];
-                        rs2_project_point_to_pixel(pixel, &intr, point3D);
+                        if(calcBoxOrientation(box)){
+                            //cout << box.rotation << endl;
+                            vertexOrthoedro(box);
+                            //cout << "length:" << abs(box.length) << endl;
+                            //cout << "width:" << abs(box.width) << endl;
+                            //cout << "height:" << abs(box.height) << endl;
 
-                        // We mark the center on the image
-                        Point centerPoint((int)pixel[0], (int)pixel[1]);
-                        circle(image, centerPoint, 5, Scalar(0, 0, 255), FILLED);
-                        putText(image, "Center", centerPoint + Point(10, 0), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
+                            std::cout << std::fixed << std::setprecision(2);
+                            //std::cout << "Center      : (" << box.center.x() << ", " << box.center.y() << ", " << box.center.z() << ")" << std::endl;
+                            // Projecting the center of the orthoedro to pixel coordinates
+                            float point3D[3] = { (float)box.center.x(), (float)box.center.y(), (float)box.center.z() };
+                            float pixel[2];
+                            rs2_project_point_to_pixel(pixel, &intr, point3D);
 
-                        drawVertex(vertexImage, box, intr);
-                        
+                            // We mark the center on the image
+                            Point centerPoint((int)pixel[0], (int)pixel[1]);
+                            circle(image, centerPoint, 5, Scalar(0, 0, 255), FILLED);
+                            putText(image, "Center", centerPoint + Point(10, 0), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
 
+                            drawVertex(vertexImage, box, intr);
+                            
+                            long long now_ms = getCurrentTimeInMilliseconds();
+                            timeDeque.push_back(now_ms);
+                            pointsDequeL.push_back(box.refPointLeftside);
+                            pointsDequeR.push_back(box.refPointRightside);
+
+                            if (timeDeque.size() > MAX_POINTS) {
+                                pointsDequeL.pop_front();
+                                pointsDequeR.pop_front();
+                                timeDeque.pop_front();
+                                filteredPointL.pop_front();
+                                filteredPointR.pop_front();
+                            }
+
+                            if (!filteredPointL.empty() && !pointsDequeL.empty()) {
+                                if ((movingAverageFilter(pointsDequeL)-pointsDequeL[pointsDequeL.size()-1]).norm()<0.1){
+                                    filteredPointL.push_back(movingAverageFilter(pointsDequeL));
+                                    filteredPointR.push_back(movingAverageFilter(pointsDequeR));
+                                }
+                                else {
+                                    filteredPointL.push_back(filteredPointL[filteredPointL.size()-1]);
+                                    filteredPointR.push_back(filteredPointR[filteredPointR.size()-1]);
+                                }
+                            }
+                            else {
+                                filteredPointL.push_back(movingAverageFilter(pointsDequeL));
+                                filteredPointR.push_back(movingAverageFilter(pointsDequeR));
+                            }
+
+                            refilteredPointL.push_back(movingAverageFilter(filteredPointL));
+                            refilteredPointR.push_back(movingAverageFilter(filteredPointR));
+
+                            // The calculated points are saved on a csv file named points_log up to MAX_POINTS, when more points are calculated the oldest points of the list are deleted      
+                            logFile.open("../points_log.csv", std::ios::out | std::ios::trunc);
+                            logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
+                            for (int j = 0; j < timeDeque.size(); j++) {
+                                logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
+                            }
+                            logFile.close();
+                        }
                     } catch (const std::exception& e) {
                         std::cerr << "Error calculating orthoedro's center: " << e.what() << std::endl;
                     }
@@ -723,10 +812,14 @@ int main(int argc, char* argv[]) {
 
 
         char c = (char)waitKey(10);
-        if (c == 27) break;
+        if (c == 27) {
+            logFile.close();
+            break;
+        }
+
         if (c == 's') { // 's' to save the configuration
             saveConfigToXML(xmlFileName);
-            cout << "Configuración guardada en " << xmlFileName << endl;
+            cout << "Configuration saved in " << xmlFileName << endl;
         }
 
 
@@ -736,13 +829,13 @@ int main(int argc, char* argv[]) {
 
         if (!depth_image_8bit.empty() && mode == "manual") {
             //cv::imshow("Depth Image", depth_image_8bit);
-        } 
-        
+        }
+
         if (selectObject && selection.width > 0 && selection.height > 0) {
             Mat roi(image, selection);
             bitwise_not(roi, roi);
         }
-        
+
         if (mode == "manual"){
             cv::Mat view1, view2, view;
             cv::cvtColor(edges, edges, cv::COLOR_GRAY2BGR);
