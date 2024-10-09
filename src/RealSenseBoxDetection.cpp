@@ -262,11 +262,12 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
     }
 }
 
-// Uses depth information to compute and mark spatial coordinates of parcel corners on the image.
-void getCloud(Mat& image, Mat& edges, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, const rs2::video_stream_profile& color_stream, const rs2::video_stream_profile& depth_stream, orthoedro& box) {
-    rs2_extrinsics extrinsics = depth_stream.get_extrinsics_to(color_stream);
-    rs2_intrinsics color_intrinsics = color_stream.get_intrinsics();
-  
+// Extracts a point cloud from a depth frame.
+// The function iterates through the depth frame, checks if each pixel is marked as part of the box on the image edges,
+// and if so, retrieves the depth information for that point. It then converts the 2D pixel
+// coordinates to 3D space and adds the resulting 3D point to the point cloud in the `box` object.
+void getCloud(Mat& edges, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, orthoedro& box) {
+ 
     // Iterate through each point in the depth frame area
     for (int y = 0; y < depth_frame.get_height(); ++y) {
         for (int x = 0; x < depth_frame.get_width(); ++x) {
@@ -279,7 +280,7 @@ void getCloud(Mat& image, Mat& edges, const rs2::depth_frame& depth_frame, const
                     // Convert from 2D coordinates to 3D using rs2_deproject_pixel_to_point
                     float point[3]; // To store the 3D coordinates
                     float pixel[2] = { static_cast<float>(x), static_cast<float>(y) };
-                    rs2_deproject_pixel_to_point(point, &color_intrinsics, pixel, depth);
+                    rs2_deproject_pixel_to_point(point, &intr, pixel, depth);
 
                     // Add the point to the Open3D cloud
                     box.measuredPoints->points_.emplace_back(point[0], point[1], point[2]);
@@ -287,31 +288,6 @@ void getCloud(Mat& image, Mat& edges, const rs2::depth_frame& depth_frame, const
             }
         }
     }
-}
-
-
-//This function iterates through the list of vertex, computes the sum of vectors for each sequential triplet, and returns the vector sum with the longest magnitude. It is used in `calcBoxOrientation` to determine the primary vector direction for orientation calculation.
-Vector3d calculateLongestVector(const vector<Vector3d>& vertex) {
-    Vector3d sum;
-    Vector3d sol(0, 0, 0);
-    double length = 0;
-    for (int i = 0; i < (vertex.size()); i++){
-        int j = i;
-        int k = i + 1;
-        int l = i + 2;
-        if (k >= vertex.size()){
-            k = k - vertex.size();
-        }
-        if (l >= vertex.size()){
-            l = l - vertex.size();
-        }
-        sum = vertex[j]+vertex[k]+vertex[l];
-        if (sum.norm() > length){
-            length = sum.norm();
-            sol = sum;
-        }
-    }
-    return sol;
 }
 
 void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
@@ -470,7 +446,7 @@ void filterPointCloud(orthoedro& box) {
     rotateCloud(box.filteredCloud, plane_model, true);
 }
 
-
+// Calculates the dimensions (height, width, and length) of the parcel's bounding box and identifies reference points that define the left and right sides of the parcel.
 void calculateBoxParameters(orthoedro& box){
     box.obb = box.filteredCloud->GetMinimalOrientedBoundingBox();
     box.vertex = box.obb.GetBoxPoints();
@@ -660,7 +636,7 @@ int main(int argc, char* argv[]) {
         if (!hist.empty()) {
             orthoedro box;
             try {
-                getCloud(image, edges, depth_frame, color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics(), color_frame.get_profile().as<rs2::video_stream_profile>(), depth_frame.get_profile().as<rs2::video_stream_profile>(), box);
+                getCloud(edges, depth_frame, color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics(), box);
                 if (!box.measuredPoints->points_.empty()) {
                     filterPointCloud(box);
                     if (box.filteredCloud->points_.size() > 0) {
@@ -669,7 +645,7 @@ int main(int argc, char* argv[]) {
                         cout << "length:" << abs(box.length) << endl;
                         cout << "width:" << abs(box.width) << endl;
                         cout << "height:" << abs(box.height) << endl;
-                        if (box.length*box.height*box.width > 0.35*0.1*0.18) visualizePointCloud(box);
+                        //if (box.length*box.height*box.width > 0.35*0.1*0.18) visualizePointCloud(box);
                         //visualizePointCloud(box);
 
 
