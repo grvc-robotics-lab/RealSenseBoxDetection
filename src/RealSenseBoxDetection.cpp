@@ -5,16 +5,6 @@
 #include <iomanip>
 #include "tinyxml2.h"
 #include <open3d/Open3D.h>
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-#include <unistd.h>
-#include <pthread.h>
-#include <sys/types.h> 
-#include <sys/socket.h>
-#include <netinet/in.h>
-#include <netdb.h>
-#include <spnav.h>
 #include <sys/time.h>
 #include <deque>
 #include <fstream>
@@ -23,23 +13,7 @@ using namespace cv;
 using namespace std;
 using namespace Eigen;
 
-// Constant definition
-#define IP_HOST_RECEIVER		"127.0.0.1"
-#define UDP_PORT_SENDER			22011
-#define SENDER_DATA_RATE		100		// Data rate in Hz for sending parcel position/orientation through UDP socket
 #define MAX_POINTS 100000
-
-// Data packet (customizable by user)
-typedef struct
-{
-	char dataUpdated[3];
-	float point1[3];
-	float point2[3];
-} __attribute__((packed))  DATA_PACKET;		// Force consecutive bytes, removing possible zero padding
-
-
-DATA_PACKET dataPacket;
-
 
 Mat image;
 Rect selection;
@@ -67,7 +41,7 @@ struct orthoedro{
     std::shared_ptr<open3d::geometry::PointCloud> mainPlane; 
     open3d::geometry::OrientedBoundingBox obb;
 
-    // Constructor para inicializar el puntero compartido
+    // Constructor to initialize the shared pointer
     orthoedro() 
         : filteredCloud(std::make_shared<open3d::geometry::PointCloud>()),
           measuredPoints(std::make_shared<open3d::geometry::PointCloud>()),
@@ -75,11 +49,11 @@ struct orthoedro{
           mainPlane(std::make_shared<open3d::geometry::PointCloud>()) {}
 };
 
-// Función para obtener el tiempo actual en milisegundos
+// Function to get the current time in milliseconds
 long long getCurrentTimeInMilliseconds() {
     struct timeval tv;
     gettimeofday(&tv, NULL);
-    return (tv.tv_sec) * 1000LL+ (tv.tv_usec / 1000);  // Convertir a segundos
+    return (tv.tv_sec) * 1000LL+ (tv.tv_usec / 1000);
 }
 
 
@@ -288,39 +262,33 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
     }
 }
 
-//Uses depth information to compute and mark spatial coordinates of parcel corners on the image.
+// Uses depth information to compute and mark spatial coordinates of parcel corners on the image.
 void getCloud(Mat& image, Mat& edges, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, const rs2::video_stream_profile& color_stream, const rs2::video_stream_profile& depth_stream, orthoedro& box) {
     rs2_extrinsics extrinsics = depth_stream.get_extrinsics_to(color_stream);
     rs2_intrinsics color_intrinsics = color_stream.get_intrinsics();
-
-    //vector<vector<Point>> contours;
-    //findContours(maskPolygon, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
-
-    //drawContours(maskPolygon, contours, -1, Scalar(0), 10); //I reduce the area of the polygon mask by 10 pixels to restrict more the area and to be sure that the point I'm taking it's on the area od the box
-   
   
-    // Iterar a través de cada punto en el área del frame de profundidad
+    // Iterate through each point in the depth frame area
     for (int y = 0; y < depth_frame.get_height(); ++y) {
         for (int x = 0; x < depth_frame.get_width(); ++x) {
-            // Verificar si el punto (x, y) está dentro del polígono
             if (edges.at<uchar>(y, x) == 255) {
-                // Obtener la profundidad en el punto (x, y)
+                // Get the depth at the point (x, y)
                 float depth = depth_frame.get_distance(x, y);
 
-                // Si la profundidad es válida
+                // If the depth is valid
                 if (depth > 0) {
-                    // Convertir de coordenadas 2D a 3D utilizando rs2_deproject_pixel_to_point
-                    float point[3]; // Para almacenar las coordenadas 3D
+                    // Convert from 2D coordinates to 3D using rs2_deproject_pixel_to_point
+                    float point[3]; // To store the 3D coordinates
                     float pixel[2] = { static_cast<float>(x), static_cast<float>(y) };
                     rs2_deproject_pixel_to_point(point, &color_intrinsics, pixel, depth);
 
-                    // Añadir el punto a la nube de Open3D
+                    // Add the point to the Open3D cloud
                     box.measuredPoints->points_.emplace_back(point[0], point[1], point[2]);
                 }
             }
         }
     }
 }
+
 
 //This function iterates through the list of vertex, computes the sum of vectors for each sequential triplet, and returns the vector sum with the longest magnitude. It is used in `calcBoxOrientation` to determine the primary vector direction for orientation calculation.
 Vector3d calculateLongestVector(const vector<Vector3d>& vertex) {
@@ -344,27 +312,6 @@ Vector3d calculateLongestVector(const vector<Vector3d>& vertex) {
         }
     }
     return sol;
-}
-
-//This function categorizes vertex into two groups (`sideA` and `sideB`) based on their dot product with `avgVector`. vertex with a positive dot product are added to `sideA`, while those with a non-positive dot product are added to `sideB`. It assists in organizing vertex for further processing in `calcBoxOrientation`.
-void separatevertex(const vector<Vector3d>& vertex, Vector3d& avgVector, vector<Vector3d>& sideA, vector<Vector3d>& sideB, Vector3d centroid) {
-    for (const auto& point : vertex) {
-        double dotProduct = point.dot(avgVector);
-        if (dotProduct > 0) {
-            sideA.push_back(point + centroid);
-        } else {
-            sideB.push_back(point + centroid);
-        }
-    }
-}
-
-//Determines the rotational matrix for aligning the parcel with the camera's coordinate system.
-void calcBoxOrientation(orthoedro& box) {
-    auto obb = box.filteredCloud->GetOrientedBoundingBox();
-    box.rotation = obb.R_;
-    box.vertex = obb.GetBoxPoints();
-    box.center = obb.center_;
-
 }
 
 void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
@@ -417,42 +364,49 @@ void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr
     drawPoint(box.center, cv::Scalar(0, 255, 255));          // center
 }
 
+// Rotates a point cloud based on a given plane model and target axis.
+// The function computes the rotation axis from the plane normal and target axis,
+// calculates the rotation angle, and applies the rotation to the point cloud.
+// If `inverse` is true, the rotation will be applied in the opposite direction.
 void rotateCloud(std::shared_ptr<open3d::geometry::PointCloud>& cloud, const Eigen::Vector4d& plane_model, bool inverse, const Eigen::Vector3d& target_axis = Eigen::Vector3d(0, 0, 1)) {
     Eigen::Vector3d plane_normal(plane_model[0], plane_model[1], plane_model[2]);
-    // Calcular el eje de rotación como el producto cruzado entre la normal del plano y el eje objetivo
+    // Calculate the rotation axis as the cross product between the plane normal and the target axis
     Eigen::Vector3d rotation_axis = plane_normal.cross(target_axis);
     
     double angle = 0.0;
     if (plane_normal.norm() > 1e-6 && target_axis.norm() > 1e-6) {
-        // Calcular el ángulo de rotación entre el plano y el eje z (o cualquier otro eje objetivo)
+        // Calculate the rotation angle between the plane and the target axis (e.g., z-axis)
         angle = std::acos(plane_normal.dot(target_axis) / (plane_normal.norm() * target_axis.norm()));
     }
 
     if (inverse == true) angle = -angle;
 
-    // Si hay un eje de rotación válido
+    // If there is a valid rotation axis
     if (rotation_axis.norm() > 1e-6) {
         rotation_axis.normalize();
         Eigen::AngleAxisd rotation_vector(angle, rotation_axis);
         Eigen::Matrix3d rotation_matrix = rotation_vector.toRotationMatrix();
 
-        // Rotar la nube de puntos usando la matriz de rotación calculada
+        // Rotate the point cloud using the calculated rotation matrix
         cloud->Rotate(rotation_matrix, Eigen::Vector3d(0, 0, 0));
     }
 }
 
 
-void filterPointCloud (orthoedro& box){
+// Filters a point cloud by downsampling and removing outliers.
+// It segments the main plane from the measured points, rotates the clouds,
+// and constructs a filtered cloud by adding points from the detected planes.
+void filterPointCloud(orthoedro& box) {
     box.measuredPoints = box.measuredPoints->VoxelDownSample(0.002);
     std::vector<size_t> outlier_indices;
     //tie(box.measuredPoints, outlier_indices) = box.measuredPoints->RemoveRadiusOutliers(60, 0.01);
 
     if (box.measuredPoints->points_.size() == 0) return;
 
-    // Parámetros para la segmentación del plano
-    double distance_threshold = 0.002;  // Umbral de distancia para considerar un punto en el plano
-    int ransac_n = 3;                  // Número de puntos para cada estimación del modelo de plano
-    int num_iterations = 1000;         // Número de iteraciones de RANSAC
+    // Parameters for plane segmentation
+    double distance_threshold = 0.002;  // Distance threshold to consider a point on the plane
+    int ransac_n = 3;                   // Number of points for each plane model estimation
+    int num_iterations = 1000;          // Number of RANSAC iterations
 
     Eigen::Vector4d plane_model;
     std::vector<size_t> inliers;
@@ -485,7 +439,6 @@ void filterPointCloud (orthoedro& box){
     if (box.remaining_cloud->points_.size() < ransac_n) return;
     std::tie(auxPlane_model, auxInliers) = box.remaining_cloud->SegmentPlane(distance_threshold, ransac_n, num_iterations);
     
-    
     std::shared_ptr<open3d::geometry::PointCloud> planeCloud = std::make_shared<open3d::geometry::PointCloud>();
 
     planeCloud = box.remaining_cloud->SelectByIndex(auxInliers);
@@ -502,21 +455,21 @@ void filterPointCloud (orthoedro& box){
 
     //tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(10, 0.01);
 
-
     for (auto& point : box.mainPlane->points_) {
         box.filteredCloud->points_.push_back(point);
-        box.filteredCloud->colors_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0)); // Negro para los puntos del plano superior
+        box.filteredCloud->colors_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0)); // Black for the upper plane points
         double x = point.x();
         double y = point.y();
         box.filteredCloud->points_.push_back(Vector3d(x, y, min_z));
-        box.filteredCloud->colors_.push_back(Eigen::Vector3d(1.0, 0.0, 0.0)); // Rojo para los puntos del plano superior
+        box.filteredCloud->colors_.push_back(Eigen::Vector3d(1.0, 0.0, 0.0)); // Red for the upper plane points
         box.filteredCloud->points_.push_back(Vector3d(x, y, max_z));
-        box.filteredCloud->colors_.push_back(Eigen::Vector3d(0.0, 1.0, 0.0)); // Verde para los puntos del plano inferior
+        box.filteredCloud->colors_.push_back(Eigen::Vector3d(0.0, 1.0, 0.0)); // Green for the lower plane points
     }
 
-    rotateCloud(box.measuredPoints, plane_model,true);
+    rotateCloud(box.measuredPoints, plane_model, true);
     rotateCloud(box.filteredCloud, plane_model, true);
 }
+
 
 void calculateBoxParameters(orthoedro& box){
     box.obb = box.filteredCloud->GetMinimalOrientedBoundingBox();
@@ -565,41 +518,39 @@ void calculateBoxParameters(orthoedro& box){
     }
 }
 
-// Visualizar la nube de puntos
+
+// Visualize the point cloud
 void visualizePointCloud(orthoedro& box) {
 
-    // Crear un vector de objetos de geometría para la visualización
+    // Create a vector of geometry objects for visualization
     std::vector<std::shared_ptr<const open3d::geometry::Geometry>> geometries;
 
-    box.obb.color_ = Eigen::Vector3d(0.0, 0.0, 0.0); // Negro para la caja envolvente
+    box.obb.color_ = Eigen::Vector3d(0.0, 0.0, 0.0); // Black for the bounding box
     
     geometries.push_back(std::make_shared<open3d::geometry::OrientedBoundingBox>(box.obb));
 
-    // Añadir la nube de puntos medida (original)
+    // Add the measured point cloud (original)
     //geometries.push_back(box.measuredPoints);
     geometries.push_back(box.filteredCloud);
     geometries.push_back(box.remaining_cloud);
 
-    // Visualizar todas las geometrías
-    open3d::visualization::DrawGeometries(geometries, "Visualización de Nube de Puntos con Plano Segmentado");
-
-
+    // Visualize all geometries
+    open3d::visualization::DrawGeometries(geometries, "Point Cloud Visualization with Segmented Plane");
 }
 
-// Función para aplicar filtro de media móvil simple
-Eigen::Vector3d aplicarFiltroMediaMovil(const std::deque<Eigen::Vector3d>& puntos) {
-    Eigen::Vector3d suma(0, 0, 0);
 
-    // Sumar los últimos 'ventana' puntos
-    int ventana = 10;
+// Function to apply a moving average filter
+Eigen::Vector3d movingAverageFilter(const std::deque<Eigen::Vector3d>& points) {
+    Eigen::Vector3d addition(0, 0, 0);
+
+    int window = 10;
     int count = 0;
-    for (int i = std::max(0, static_cast<int>(puntos.size()) - ventana); i < puntos.size(); ++i) {
-        suma += puntos[i];
+    for (int i = std::max(0, static_cast<int>(points.size()) - window); i < points.size(); ++i) {
+        addition += points[i];
         count++;
     }
 
-    // Devolver el promedio
-    return suma / count;
+    return addition / count;
 }
 
 int main(int argc, char* argv[]) {
@@ -653,12 +604,8 @@ int main(int argc, char* argv[]) {
     float phranges[] = {0, 180};
 
     std::ofstream logFile;
-    logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
-    
-    // Escribir encabezado del archivo (agregar columna de tiempo)
-    logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z\n";
 
-    // Definir una deque para almacenar los puntos y sus tiempos
+    // Define a deque to store the points and their times
     std::deque<Eigen::Vector3d> pointsDequeL;
     std::deque<Eigen::Vector3d> pointsDequeR;
     std::deque<long long> timeDeque;
@@ -669,46 +616,12 @@ int main(int argc, char* argv[]) {
     std::deque<Eigen::Vector3d> refilteredPointL;
     std::deque<Eigen::Vector3d> refilteredPointR;
 
-    //SOCKET
-	spnav_event sev;
-	int error = 0;
-
-	// Socket variables
-	struct sockaddr_in addrHost;
-    struct hostent * host;
-	int socketPublisher = -1;
 	
 	// Timing variables
 	struct timeval tini;
 	struct timeval tend;
 	double delta_t = 0;
 	
-	// Open the socket in datagram mode (UDP)
-	socketPublisher = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
-    if(socketPublisher < 0)
-    {
-    	fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not open socket.\n");
-    	error = 1;
-   	}
-	
-	// Get the host by its IP address (defined as constant or provided through thread structure)
-   	host = gethostbyname(IP_HOST_RECEIVER);
-    if(host == NULL)
-	{
-	    fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not get host by name.\n");
-	    error = 1;
-	}
-	
-	// Set the address of the host
-	if(error == 0)
-	{
-		bzero((char*)&addrHost, sizeof(struct sockaddr_in));
-		addrHost.sin_family = AF_INET;
-		bcopy((char*)host->h_addr, (char*)&addrHost.sin_addr.s_addr, host->h_length);
-		addrHost.sin_port = htons(UDP_PORT_SENDER);
-	}
-	else
-		close(socketPublisher);
 
     while (true) {
         rs2::frameset frames = pipe.wait_for_frames();
@@ -774,9 +687,9 @@ int main(int argc, char* argv[]) {
                         }
 
                         if (!filteredPointL.empty() && !pointsDequeL.empty()) {
-                            if ((aplicarFiltroMediaMovil(pointsDequeL)-pointsDequeL[pointsDequeL.size()-1]).norm()<0.1){
-                                filteredPointL.push_back(aplicarFiltroMediaMovil(pointsDequeL));
-                                filteredPointR.push_back(aplicarFiltroMediaMovil(pointsDequeR));
+                            if ((movingAverageFilter(pointsDequeL)-pointsDequeL[pointsDequeL.size()-1]).norm()<0.1){
+                                filteredPointL.push_back(movingAverageFilter(pointsDequeL));
+                                filteredPointR.push_back(movingAverageFilter(pointsDequeR));
                             }
                             else {
                                 filteredPointL.push_back(filteredPointL[filteredPointL.size()-1]);
@@ -784,36 +697,20 @@ int main(int argc, char* argv[]) {
                             }
                         }
                         else {
-                            filteredPointL.push_back(aplicarFiltroMediaMovil(pointsDequeL));
-                            filteredPointR.push_back(aplicarFiltroMediaMovil(pointsDequeR));
+                            filteredPointL.push_back(movingAverageFilter(pointsDequeL));
+                            filteredPointR.push_back(movingAverageFilter(pointsDequeR));
                         }
 
-                        refilteredPointL.push_back(aplicarFiltroMediaMovil(filteredPointL));
-                        refilteredPointR.push_back(aplicarFiltroMediaMovil(filteredPointR));
+                        refilteredPointL.push_back(movingAverageFilter(filteredPointL));
+                        refilteredPointR.push_back(movingAverageFilter(filteredPointR));
 
-                        // Guardar los últimos 100 puntos con sus tiempos en el archivo        
-                        logFile.close();  // Cerrar el archivo para eliminar el contenido viejo
-                        logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
+                        // The calculated points are saved on a csv file named points_log up to MAX_POINTS, when more points are calculated the oldest points of the list are deleted      
+                        logFile.open("../points_log.csv", std::ios::out | std::ios::trunc);
                         logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
                         for (int j = 0; j < timeDeque.size(); j++) {
                             logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
                         }
-                                            
-                        strcpy(dataPacket.dataUpdated, "VDP");
-                        
-                        dataPacket.point1[0] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][0]);
-                        dataPacket.point1[1] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][1]);
-                        dataPacket.point1[2] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][2]);
-                        dataPacket.point2[0] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][0]);
-                        dataPacket.point2[1] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][1]);
-                        dataPacket.point2[2] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][2]);
-
-                        // Send the packet
-		                if(sendto(socketPublisher, (char*)&dataPacket, sizeof(DATA_PACKET), 0, (struct sockaddr*)&addrHost, sizeof(struct sockaddr)) < 0)
-	                    {
-		                    fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not send data.\n");
-			                error = 1;
-		                }
+                        logFile.close();
                     }
                 }
             } catch (const std::exception& e) {
