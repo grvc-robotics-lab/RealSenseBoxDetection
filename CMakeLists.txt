@@ -13,9 +13,12 @@ find_package(OpenCV REQUIRED)
 
 find_package(Eigen3 REQUIRED)
 
+find_package(fmt REQUIRED)
+
+find_package(Open3D REQUIRED)
+
 add_subdirectory(include/tinyxml2)
 
 include_directories(${realsense2_INCLUDE_DIR} ${OpenCV_INCLUDE_DIRS} ${EIGEN3_INCLUDE_DIRS} include/tinyxml2 )
 
-target_link_libraries(RealSenseBoxDetection ${realsense2_LIBRARY} ${OpenCV_LIBS} Eigen3::Eigen tinyxml2 pthread)
-
+target_link_libraries(RealSenseBoxDetection ${realsense2_LIBRARY} ${OpenCV_LIBS} Eigen3::Eigen tinyxml2 Open3D::Open3D fmt::fmt)

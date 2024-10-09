@@ -23,7 +23,6 @@ This software module enables the detection and localization of a parcel, such as
     - [adjustROI](#adjustroi)
     - [calculateLongestVector](#calculatelongestvector)
     - [separateVertex](#separatevertex)
-    - [movingAverageFilter](#movingAverageFilter)
 - [Main Function Structure](#main-function-structure)
 
 ## Prerequisites
@@ -190,14 +189,7 @@ To start the program in automatic mode:
   - `centroid`: Centroid point around which separation is performed.
 - **Description:** This function categorizes vertex into two groups (`sideA` and `sideB`) based on their dot product with `avgVector`. vertex with a positive dot product are added to `sideA`, while those with a non-positive dot product are added to `sideB`. It assists in organizing vertex for further processing in `calcBoxOrientation`.
 
-#### movingAverageFilter
-
-- **Purpose:** Applies a moving average filter to smooth the 3D positions of parcel vertex points.
-- **Parameters:**
-  - `points`: A deque of `Eigen::Vector3d` representing a sequence of 3D points.
-- **Returns:** The filtered 3D point, computed as the average of the last window points in the deque.
-- **Description:** This function computes the moving average of the most recent 3D points (10 points as default) in the points deque. The result is a smoothed point that reduces noise in the detected parcel's position. This is useful for stabilizing the detected position of the parcel over multiple frames, especially when there is jitter or fluctuation in the measurements.
-
+  
 
 ## Main Function Structure
 
@@ -231,8 +223,6 @@ int main(int argc, char** argv) {
     // Calculate parcel Orientation based on the vectors to the points calculated on the previous function (calcBoxOrientation)
 
     // Calculate the vectors to the corners of the parcel using the information obtained from the previous functions. It also calculate the size of the parcel, grasping points on the center of the sides of the parcel and it's center (vertexOrthoedro)
-
-    // Calculate the filtered point using a moving average filter. Then, points that are further than a certain distance (default is 0.1) are substituted with the previous point, and the filtered point is recalculated with the updated set.
     
     // Display results and user interface for manual selection
     

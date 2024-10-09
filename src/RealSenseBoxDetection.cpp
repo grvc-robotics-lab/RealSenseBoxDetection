@@ -4,26 +4,41 @@
 #include <iostream>
 #include <iomanip>
 #include "tinyxml2.h"
+#include <open3d/Open3D.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/types.h> 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <spnav.h>
+#include <sys/time.h>
+#include <deque>
+#include <fstream>
 
 using namespace cv;
 using namespace std;
 using namespace Eigen;
 
-
-
-// Time library
-#include <sys/time.h>
-
-#include <deque>
-#include <fstream>
+// Constant definition
+#define IP_HOST_RECEIVER		"127.0.0.1"
+#define UDP_PORT_SENDER			22011
+#define SENDER_DATA_RATE		100		// Data rate in Hz for sending parcel position/orientation through UDP socket
 #define MAX_POINTS 100000
 
-// Función para obtener el tiempo actual en milisegundos
-long long getCurrentTimeInMilliseconds() {
-    struct timeval tv;
-    gettimeofday(&tv, NULL);
-    return (tv.tv_sec) * 1000LL+ (tv.tv_usec / 1000);  // Convertir a segundos
-}
+// Data packet (customizable by user)
+typedef struct
+{
+	char dataUpdated[3];
+	float point1[3];
+	float point2[3];
+} __attribute__((packed))  DATA_PACKET;		// Force consecutive bytes, removing possible zero padding
+
+
+DATA_PACKET dataPacket;
 
 
 Mat image;
@@ -37,7 +52,7 @@ string xmlFileName = "../Config.xml";
 int vmin = 50, vmax = 256, smin = 150, smax = 256, huemin = 20, huemax = 30, minContour = 5000;
 
 struct orthoedro{
-    vector<Vector3d> measuredPoints;
+
     vector<Vector3d> vertex;
     Vector3d center;
     Vector3d refPointRightside;
@@ -46,7 +61,26 @@ struct orthoedro{
     double width;
     double length;
     double height;
+    std::shared_ptr<open3d::geometry::PointCloud> filteredCloud;
+    std::shared_ptr<open3d::geometry::PointCloud> measuredPoints;
+    std::shared_ptr<open3d::geometry::PointCloud> remaining_cloud;
+    std::shared_ptr<open3d::geometry::PointCloud> mainPlane; 
+    open3d::geometry::OrientedBoundingBox obb;
+
+    // Constructor para inicializar el puntero compartido
+    orthoedro() 
+        : filteredCloud(std::make_shared<open3d::geometry::PointCloud>()),
+          measuredPoints(std::make_shared<open3d::geometry::PointCloud>()),
+          remaining_cloud(std::make_shared<open3d::geometry::PointCloud>()),
+          mainPlane(std::make_shared<open3d::geometry::PointCloud>()) {}
 };
+
+// Función para obtener el tiempo actual en milisegundos
+long long getCurrentTimeInMilliseconds() {
+    struct timeval tv;
+    gettimeofday(&tv, NULL);
+    return (tv.tv_sec) * 1000LL+ (tv.tv_usec / 1000);  // Convertir a segundos
+}
 
 
 // Verifies if the point is within the valid frame dimensions.
@@ -254,131 +288,38 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
     }
 }
 
-
-//Finds and returns the polygon with best fit to the detected contours.
-vector<Point> getBestPolygon(const Mat& edges) {
-    vector<vector<Point>> edgeContours;
-    findContours(edges, edgeContours, RETR_EXTERNAL, CHAIN_APPROX_SIMPLE);
-    vector<Point> bestPolygon;
-    double bestScore = DBL_MAX;
-    for (size_t i = 0; i < edgeContours.size(); i++) {
-        vector<Point> approx;
-        approxPolyDP(edgeContours[i], approx, arcLength(edgeContours[i], true) * 0.02, true);
-        if (approx.size() >= 4 && approx.size() <= 6) {
-            double score = contourArea(approx);
-            if (score < bestScore) {
-                bestScore = score;
-                bestPolygon = approx;
-            }
-        }
-    }
-    return bestPolygon;
-}
-
-
 //Uses depth information to compute and mark spatial coordinates of parcel corners on the image.
-vector<Eigen::Vector3d> markVertexDistances(Mat& image, const vector<Point>& bestPolygon, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, const rs2::video_stream_profile& color_stream, const rs2::video_stream_profile& depth_stream) {
+void getCloud(Mat& image, Mat& edges, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, const rs2::video_stream_profile& color_stream, const rs2::video_stream_profile& depth_stream, orthoedro& box) {
     rs2_extrinsics extrinsics = depth_stream.get_extrinsics_to(color_stream);
     rs2_intrinsics color_intrinsics = color_stream.get_intrinsics();
 
-    // I create a mask that covers the areaa of the polygon
-    Mat maskPolygon = Mat::zeros(image.size(), CV_8UC1);
-    fillPoly(maskPolygon, vector<vector<Point>>{bestPolygon}, Scalar(255));
+    //vector<vector<Point>> contours;
+    //findContours(maskPolygon, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
 
-    vector<vector<Point>> contours;
-    findContours(maskPolygon, contours, RETR_LIST, CHAIN_APPROX_SIMPLE);
+    //drawContours(maskPolygon, contours, -1, Scalar(0), 10); //I reduce the area of the polygon mask by 10 pixels to restrict more the area and to be sure that the point I'm taking it's on the area od the box
+   
+  
+    // Iterar a través de cada punto en el área del frame de profundidad
+    for (int y = 0; y < depth_frame.get_height(); ++y) {
+        for (int x = 0; x < depth_frame.get_width(); ++x) {
+            // Verificar si el punto (x, y) está dentro del polígono
+            if (edges.at<uchar>(y, x) == 255) {
+                // Obtener la profundidad en el punto (x, y)
+                float depth = depth_frame.get_distance(x, y);
 
-    drawContours(maskPolygon, contours, -1, Scalar(0), 12); //I reduce the area of the polygon mask by 10 pixels to restrict more the area and to be sure that the point I'm taking it's on the area od the box
+                // Si la profundidad es válida
+                if (depth > 0) {
+                    // Convertir de coordenadas 2D a 3D utilizando rs2_deproject_pixel_to_point
+                    float point[3]; // Para almacenar las coordenadas 3D
+                    float pixel[2] = { static_cast<float>(x), static_cast<float>(y) };
+                    rs2_deproject_pixel_to_point(point, &color_intrinsics, pixel, depth);
 
-    vector<Eigen::Vector3d> spatialPoints;
-
-    for (const auto& vertex : bestPolygon) {
-        if (isValidPoint(vertex, depth_frame)) {
-            float maxDist = FLT_MIN;
-            Point bestPoint = vertex;
-            int margin = 10;
-
-            for (int dy = -margin; dy <= margin; ++dy) {
-                for (int dx = -margin; dx <= margin; ++dx) {
-                    Point neighbor = vertex + Point(dx, dy);
-                    if (isValidPoint(neighbor, depth_frame) && maskPolygon.at<uchar>(neighbor) == 255) {
-                        float depth = depth_frame.get_distance(neighbor.x, neighbor.y);
-                        if (depth > maxDist) {
-                            maxDist = depth;
-                            bestPoint = neighbor;
-                        }
-                    }
+                    // Añadir el punto a la nube de Open3D
+                    box.measuredPoints->points_.emplace_back(point[0], point[1], point[2]);
                 }
-            }
-
-            if (maxDist > FLT_MIN) {
-                float pixel_color[2] = { (float)bestPoint.x, (float)bestPoint.y };
-                float point_depth[3];
-                rs2_deproject_pixel_to_point(point_depth, &color_intrinsics, pixel_color, maxDist);
-                Eigen::Vector3d point3D(point_depth[0], point_depth[1], point_depth[2]);
-
-                spatialPoints.push_back(point3D);
-
-                std::stringstream ss;
-                ss << std::fixed << std::setprecision(2) << maxDist << "m";
-                putText(image, ss.str(), bestPoint, FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0), 2);
-
-                ss.str("");
-                ss << "(" << std::fixed << std::setprecision(2) << point3D.x() << ", " << point3D.y() << ", " << point3D.z() << ")";
-                putText(image, ss.str(), bestPoint + Point(0, 15), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(255, 0, 0), 2);
             }
         }
     }
-    return spatialPoints;
-}
-
-
-// Calculates vertex, dimensions, and center of the parcel in 3D space.
-void vertexOrthoedro(orthoedro& box) {
-    if (box.measuredPoints.size() < 4) {
-        throw invalid_argument("At least 5 points are needed to define an orthoedro.");
-    }
-
-    vector<Vector3d> transformedPoints;
-    for (const auto& point : box.measuredPoints) {
-        transformedPoints.push_back(box.rotation.transpose() * point);
-    }
-
-    // Calculate the maximum and minimum point in the transformed base
-    Vector3d minPoint = transformedPoints[0];
-    Vector3d maxPoint = transformedPoints[0];
-    for (const auto& point : transformedPoints) {
-        minPoint = minPoint.cwiseMin(point);
-        maxPoint = maxPoint.cwiseMax(point);
-    }
-
-    // Calculate the vertex of the orthoedron in the transformed base
-    vector<Vector3d> vertex(8);
-    vertex[0] = Vector3d(minPoint.x(), minPoint.y(), minPoint.z());
-    vertex[1] = Vector3d(maxPoint.x(), minPoint.y(), minPoint.z());
-    vertex[2] = Vector3d(minPoint.x(), maxPoint.y(), minPoint.z());
-    vertex[3] = Vector3d(minPoint.x(), minPoint.y(), maxPoint.z());
-    vertex[4] = Vector3d(maxPoint.x(), maxPoint.y(), minPoint.z());
-    vertex[5] = Vector3d(minPoint.x(), maxPoint.y(), maxPoint.z());
-    vertex[6] = Vector3d(maxPoint.x(), minPoint.y(), maxPoint.z());
-    vertex[7] = Vector3d(maxPoint.x(), maxPoint.y(), maxPoint.z());
-
-    Vector3d size = vertex[7] - vertex[0];
-    box.refPointRightside = (vertex[0] + vertex[1] + vertex[3] + vertex[6])/4;
-    box.refPointLeftside = (vertex[2] + vertex[4] + vertex[5] + vertex[7])/4;
-
-    // Transform the vertex back to the original base
-    for (auto& point : vertex) {
-        point = box.rotation * point;
-    }
-    // Calculate box size
-    box.vertex = vertex;
-    box.height = abs(size.z());
-    box.length = abs(size.y());
-    box.width = abs(size.x());
-    box.center = (vertex[0] + vertex[1] + vertex[2] + vertex[3] + vertex[4] + vertex[5] + vertex[6] + vertex[7])/8;
-    box.refPointRightside = box.rotation * box.refPointRightside;
-    box.refPointLeftside = box.rotation * box.refPointLeftside;
 }
 
 //This function iterates through the list of vertex, computes the sum of vectors for each sequential triplet, and returns the vector sum with the longest magnitude. It is used in `calcBoxOrientation` to determine the primary vector direction for orientation calculation.
@@ -418,158 +359,12 @@ void separatevertex(const vector<Vector3d>& vertex, Vector3d& avgVector, vector<
 }
 
 //Determines the rotational matrix for aligning the parcel with the camera's coordinate system.
-int calcBoxOrientation(orthoedro& box) {
-    // Calculate the centroid of the polygon
-    Eigen::Vector3d centroid(0, 0, 0);
+void calcBoxOrientation(orthoedro& box) {
+    auto obb = box.filteredCloud->GetOrientedBoundingBox();
+    box.rotation = obb.R_;
+    box.vertex = obb.GetBoxPoints();
+    box.center = obb.center_;
 
-    Vector3d minPoint = box.measuredPoints[0];
-    Vector3d maxPoint = box.measuredPoints[0];
-    for (const auto& point : box.measuredPoints) {
-        minPoint = minPoint.cwiseMin(point);
-        maxPoint = maxPoint.cwiseMax(point);
-    }
-
-    centroid = (minPoint + maxPoint)/2;
-
-    // Calculate the angle
-    auto angleToVertical = [&](const Eigen::Vector3d& point) {
-        Eigen::Vector3d vec = point - centroid;
-        return atan2(vec.x(), vec.y());
-    };
-
-    // Sort the points
-    sort(box.measuredPoints.begin(), box.measuredPoints.end(), [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
-        return angleToVertical(a) > angleToVertical(b);
-    });
-
-    vector<Vector3d> vectorVertexToCenter;
-    for (const auto& point : box.measuredPoints){
-        vectorVertexToCenter.push_back(point-centroid);
-    }
-
-    Vector3d avgVector = calculateLongestVector(vectorVertexToCenter);
-
-    vector<Vector3d> sideA, sideB;
-    separatevertex(vectorVertexToCenter, avgVector, sideA, sideB, centroid);
-    vector<Vector3d> RightSide, LeftSide;
-    double xmeanSideA, xmeanSideB;
-    for (const auto& vertex : sideA){
-        xmeanSideA += vertex.x();
-    }
-    xmeanSideA = xmeanSideA / sideA.size();
-    for (const auto& vertex : sideB){
-        xmeanSideB += vertex.x();
-    }
-    xmeanSideB = xmeanSideB / sideB.size();
-
-    if (xmeanSideA > xmeanSideB){
-        RightSide = sideA;
-        LeftSide = sideB;
-    }
-    else {
-        RightSide = sideB;
-        LeftSide = sideA;
-    }
-
-    // Calculate the angle
-    auto angleRight = [&](const Eigen::Vector3d& point) {
-        Eigen::Vector3d vec = point - centroid;
-        return atan2(vec.y(), vec.x());
-    };
-
-    // Sort the points
-    sort(RightSide.begin(), RightSide.end(), [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
-        return angleRight(a) < angleRight(b);
-    });
-
-    auto angleLeft = [&](const Eigen::Vector3d& point) {
-        Eigen::Vector3d vec = point - centroid;
-        return atan2(-vec.y(), -vec.x());
-    };
-
-    // Sort the points
-    sort(LeftSide.begin(), LeftSide.end(), [&](const Eigen::Vector3d& a, const Eigen::Vector3d& b) {
-        return angleLeft(a) < angleLeft(b);
-    });
-
-    box.measuredPoints.clear();
-    box.measuredPoints = RightSide;
-    for (const auto& point : LeftSide){
-        box.measuredPoints.push_back(point);
-    }
-
-    Eigen::Vector3d x;
-    Eigen::Vector3d y;
-    Eigen::Vector3d z;
-
-    int pointsontheright = 0, pointsontheleft = 0;
-    for (const auto& point : box.measuredPoints) {
-        double angle = angleToVertical(point);
-        if (angle >= 0 && angle < M_PI) {
-            pointsontheright++;
-        }
-        else if (angle >= -M_PI && angle < 0) {
-            pointsontheleft++;
-        }
-    }
-
-    if (box.measuredPoints.size() == 6) {
-        if ((box.measuredPoints[2]-box.measuredPoints[1]).norm()>(box.measuredPoints[1]-box.measuredPoints[0]).norm()){
-            if ((box.measuredPoints[5]-box.measuredPoints[4]).norm()>(box.measuredPoints[4]-box.measuredPoints[3]).norm()){
-                x = ((box.measuredPoints[1]-box.measuredPoints[2])+(box.measuredPoints[5]-box.measuredPoints[4]))/2;
-            }
-            else{
-                x = ((box.measuredPoints[1]-box.measuredPoints[2])+(box.measuredPoints[4]-box.measuredPoints[3]))/2;
-            }
-        }
-        else{
-            if ((box.measuredPoints[5]-box.measuredPoints[4]).norm()>(box.measuredPoints[4]-box.measuredPoints[3]).norm()){
-                x = ((box.measuredPoints[0]-box.measuredPoints[1])+(box.measuredPoints[5]-box.measuredPoints[4]))/2;
-            }
-            else{
-                x = ((box.measuredPoints[0]-box.measuredPoints[1])+(box.measuredPoints[4]-box.measuredPoints[3]))/2;
-            }
-        }
-        y = ((box.measuredPoints[3]-box.measuredPoints[2])+(box.measuredPoints[5]-box.measuredPoints[0]))/2;
-        z = x.cross(y);
-        x = y.cross(z);
-    }
-    else{
-        if (pointsontheright == 3){
-            if ((box.measuredPoints[2]-box.measuredPoints[1]).norm()>(box.measuredPoints[1]-box.measuredPoints[0]).norm()){
-                x = box.measuredPoints[1]-box.measuredPoints[2];
-            }
-            else{
-                x = box.measuredPoints[0]-box.measuredPoints[1];
-            }
-            y = box.measuredPoints[3]-box.measuredPoints[2];
-            z = x.cross(y);
-            x = y.cross(z);
-        }
-        else if (pointsontheleft == 3){
-            int i = pointsontheright;
-            if ((box.measuredPoints[i]-box.measuredPoints[i + 1]).norm()>(box.measuredPoints[i + 1]-box.measuredPoints[i + 2]).norm()){
-                x = box.measuredPoints[i + 1]-box.measuredPoints[i];
-            }
-            else{
-                x = box.measuredPoints[i + 2]-box.measuredPoints[i + 1];
-            }
-            y = box.measuredPoints[i]-box.measuredPoints[i - 1];
-            z = x.cross(y);
-            x = y.cross(z);
-        }
-        else{
-            cout << "Not enough data to calculate the orientation" << endl;
-            return 0;
-        }
-    }
-    x.normalize();
-    y.normalize();
-    z.normalize();
-    box.rotation.col(0) = x;
-    box.rotation.col(1) = y;
-    box.rotation.col(2) = z;
-    return 1;
 }
 
 void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
@@ -583,12 +378,16 @@ void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr
         rs2_project_point_to_pixel(pixel, &intr, point3D);
 
         Scalar color;
-        if (i == 0) {
-            color = Scalar(0, 0, 255);
-        } else if (i == 7) {
-            color = Scalar(255, 0, 0);
+        if (i == 9) {
+            color = Scalar(255, 0, 0); 
+        } else if (i == 9) {
+            color = Scalar(0, 255, 0); 
+        } else if (i == 9) {
+            color = Scalar(0, 0, 255); 
+        } else if (i == 9) {
+            color = Scalar(0, 0, 0); 
         } else {
-            color = Scalar(0, 255, 0);
+            color = Scalar(255, 255, 255); 
         }
 
         Point vertexPoint(static_cast<int>(pixel[0]), static_cast<int>(pixel[1]));
@@ -618,34 +417,192 @@ void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr
     drawPoint(box.center, cv::Scalar(0, 255, 255));          // center
 }
 
-// Function to apply a moving average filter
-Eigen::Vector3d movingAverageFilter(const std::deque<Eigen::Vector3d>& points) {
-    Eigen::Vector3d addition(0, 0, 0);
+void rotateCloud(std::shared_ptr<open3d::geometry::PointCloud>& cloud, const Eigen::Vector4d& plane_model, bool inverse, const Eigen::Vector3d& target_axis = Eigen::Vector3d(0, 0, 1)) {
+    Eigen::Vector3d plane_normal(plane_model[0], plane_model[1], plane_model[2]);
+    // Calcular el eje de rotación como el producto cruzado entre la normal del plano y el eje objetivo
+    Eigen::Vector3d rotation_axis = plane_normal.cross(target_axis);
+    
+    double angle = 0.0;
+    if (plane_normal.norm() > 1e-6 && target_axis.norm() > 1e-6) {
+        // Calcular el ángulo de rotación entre el plano y el eje z (o cualquier otro eje objetivo)
+        angle = std::acos(plane_normal.dot(target_axis) / (plane_normal.norm() * target_axis.norm()));
+    }
 
-    int window = 10;
+    if (inverse == true) angle = -angle;
+
+    // Si hay un eje de rotación válido
+    if (rotation_axis.norm() > 1e-6) {
+        rotation_axis.normalize();
+        Eigen::AngleAxisd rotation_vector(angle, rotation_axis);
+        Eigen::Matrix3d rotation_matrix = rotation_vector.toRotationMatrix();
+
+        // Rotar la nube de puntos usando la matriz de rotación calculada
+        cloud->Rotate(rotation_matrix, Eigen::Vector3d(0, 0, 0));
+    }
+}
+
+
+void filterPointCloud (orthoedro& box){
+    box.measuredPoints = box.measuredPoints->VoxelDownSample(0.002);
+    std::vector<size_t> outlier_indices;
+    //tie(box.measuredPoints, outlier_indices) = box.measuredPoints->RemoveRadiusOutliers(60, 0.01);
+
+    if (box.measuredPoints->points_.size() == 0) return;
+
+    // Parámetros para la segmentación del plano
+    double distance_threshold = 0.002;  // Umbral de distancia para considerar un punto en el plano
+    int ransac_n = 3;                  // Número de puntos para cada estimación del modelo de plano
+    int num_iterations = 1000;         // Número de iteraciones de RANSAC
+
+    Eigen::Vector4d plane_model;
+    std::vector<size_t> inliers;
+
+    if (box.measuredPoints->points_.size() < ransac_n) return;
+
+    std::tie(plane_model, inliers) = box.measuredPoints->SegmentPlane(distance_threshold, ransac_n, num_iterations);
+
+    rotateCloud(box.measuredPoints, plane_model, false);
+
+    box.remaining_cloud = box.measuredPoints->SelectByIndex(inliers, true);
+    box.mainPlane = box.measuredPoints->SelectByIndex(inliers);
+
+    outlier_indices.clear();
+    tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(35, 0.01);
+
+    if (box.remaining_cloud->points_.size() == 0) return;
+
+    int neighbors = 40;
+    outlier_indices.clear();
+    if (box.remaining_cloud->points_.size() > neighbors) {
+        tie(box.remaining_cloud, outlier_indices) = box.remaining_cloud->RemoveRadiusOutliers(neighbors, 0.01);
+    }
+
+    if (box.remaining_cloud->points_.size() == 0) return;
+
+    std::vector<size_t> auxInliers;
+    Eigen::Vector4d auxPlane_model;
+
+    if (box.remaining_cloud->points_.size() < ransac_n) return;
+    std::tie(auxPlane_model, auxInliers) = box.remaining_cloud->SegmentPlane(distance_threshold, ransac_n, num_iterations);
+    
+    
+    std::shared_ptr<open3d::geometry::PointCloud> planeCloud = std::make_shared<open3d::geometry::PointCloud>();
+
+    planeCloud = box.remaining_cloud->SelectByIndex(auxInliers);
+    
+    outlier_indices.clear();
+    tie(planeCloud, outlier_indices) = planeCloud->RemoveRadiusOutliers(35, 0.01);
+    
+    *box.filteredCloud += *planeCloud;
+
+    if (planeCloud->points_.size() == 0) return;
+    
+    double max_z = planeCloud->GetMaxBound().z();
+    double min_z = planeCloud->GetMinBound().z();
+
+    //tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(10, 0.01);
+
+
+    for (auto& point : box.mainPlane->points_) {
+        box.filteredCloud->points_.push_back(point);
+        box.filteredCloud->colors_.push_back(Eigen::Vector3d(0.0, 0.0, 0.0)); // Negro para los puntos del plano superior
+        double x = point.x();
+        double y = point.y();
+        box.filteredCloud->points_.push_back(Vector3d(x, y, min_z));
+        box.filteredCloud->colors_.push_back(Eigen::Vector3d(1.0, 0.0, 0.0)); // Rojo para los puntos del plano superior
+        box.filteredCloud->points_.push_back(Vector3d(x, y, max_z));
+        box.filteredCloud->colors_.push_back(Eigen::Vector3d(0.0, 1.0, 0.0)); // Verde para los puntos del plano inferior
+    }
+
+    rotateCloud(box.measuredPoints, plane_model,true);
+    rotateCloud(box.filteredCloud, plane_model, true);
+}
+
+void calculateBoxParameters(orthoedro& box){
+    box.obb = box.filteredCloud->GetMinimalOrientedBoundingBox();
+    box.vertex = box.obb.GetBoxPoints();
+    box.center = box.obb.GetCenter();
+    double a = (box.vertex[0]-box.vertex[1]).norm();
+    double b = (box.vertex[0]-box.vertex[2]).norm();
+    double c = (box.vertex[0]-box.vertex[3]).norm();
+    vector<double> Size = {a, b, c};
+    std::sort(Size.begin(), Size.end());
+    box.height = Size[0];
+    box.width = Size[1];
+    box.length = Size [2];
+
+    Vector3d ref1;
+    Vector3d ref2;
+    Vector3d j = (box.vertex[1]-box.vertex[0] + box.vertex[2]-box.vertex[0])/2;
+    Vector3d k = (box.vertex[2]-box.vertex[0] + box.vertex[3]-box.vertex[0])/2;
+    Vector3d l = (box.vertex[3]-box.vertex[0] + box.vertex[1]-box.vertex[0])/2;
+    
+    vector<double> refPointvector = {j.norm(), k.norm(), l.norm()};
+    std::sort(refPointvector.begin(), refPointvector.end());
+    
+    if (refPointvector[0] == j.norm()) ref1 = box.vertex[0] + j;
+    if (refPointvector[0] == k.norm()) ref1 = box.vertex[0] + k;
+    if (refPointvector[0] == l.norm()) ref1 = box.vertex[0] + l;
+
+    j = (box.vertex[5]-box.vertex[4] + box.vertex[6]-box.vertex[4])/2;
+    k = (box.vertex[6]-box.vertex[4] + box.vertex[7]-box.vertex[4])/2;
+    l = (box.vertex[7]-box.vertex[4] + box.vertex[5]-box.vertex[4])/2;
+    
+    refPointvector = {j.norm(), k.norm(), l.norm()};
+    std::sort(refPointvector.begin(), refPointvector.end());
+    
+    if (refPointvector[0] == j.norm()) ref2 = box.vertex[4] + j;
+    if (refPointvector[0] == k.norm()) ref2 = box.vertex[4] + k;
+    if (refPointvector[0] == l.norm()) ref2 = box.vertex[4] + l;
+
+    if (ref1.x() > ref2.x()) {
+        box.refPointLeftside = ref1;
+        box.refPointRightside = ref2;
+    } else {
+        box.refPointLeftside = ref2;
+        box.refPointRightside = ref1;
+        
+    }
+}
+
+// Visualizar la nube de puntos
+void visualizePointCloud(orthoedro& box) {
+
+    // Crear un vector de objetos de geometría para la visualización
+    std::vector<std::shared_ptr<const open3d::geometry::Geometry>> geometries;
+
+    box.obb.color_ = Eigen::Vector3d(0.0, 0.0, 0.0); // Negro para la caja envolvente
+    
+    geometries.push_back(std::make_shared<open3d::geometry::OrientedBoundingBox>(box.obb));
+
+    // Añadir la nube de puntos medida (original)
+    //geometries.push_back(box.measuredPoints);
+    geometries.push_back(box.filteredCloud);
+    geometries.push_back(box.remaining_cloud);
+
+    // Visualizar todas las geometrías
+    open3d::visualization::DrawGeometries(geometries, "Visualización de Nube de Puntos con Plano Segmentado");
+
+
+}
+
+// Función para aplicar filtro de media móvil simple
+Eigen::Vector3d aplicarFiltroMediaMovil(const std::deque<Eigen::Vector3d>& puntos) {
+    Eigen::Vector3d suma(0, 0, 0);
+
+    // Sumar los últimos 'ventana' puntos
+    int ventana = 10;
     int count = 0;
-    for (int i = std::max(0, static_cast<int>(points.size()) - window); i < points.size(); ++i) {
-        addition += points[i];
+    for (int i = std::max(0, static_cast<int>(puntos.size()) - ventana); i < puntos.size(); ++i) {
+        suma += puntos[i];
         count++;
     }
 
-    return addition / count;
+    // Devolver el promedio
+    return suma / count;
 }
 
 int main(int argc, char* argv[]) {
-    std::ofstream logFile;
-
-    // A deque is used to save the data of the points and their temporary mark
-    std::deque<Eigen::Vector3d> pointsDequeL;
-    std::deque<Eigen::Vector3d> pointsDequeR;
-    std::deque<long long> timeDeque;
-
-    std::deque<Eigen::Vector3d> filteredPointL;
-    std::deque<Eigen::Vector3d> filteredPointR;
-
-    std::deque<Eigen::Vector3d> refilteredPointL;
-    std::deque<Eigen::Vector3d> refilteredPointR;
-
     if (argc < 2) {
         cout << "Usage: " << argv[0] << " <mode>" << endl;
         cout << "mode: auto or manual" << endl;
@@ -669,13 +626,13 @@ int main(int argc, char* argv[]) {
 
     rs2::align align_to_color(RS2_STREAM_COLOR);
     if (mode=="manual"){
-
+ 
         namedWindow("View", WINDOW_AUTOSIZE);
         moveWindow("View", 80, 0);
 
         namedWindow("Options", WINDOW_AUTOSIZE);
 
-
+    
         createTrackbar("Vmin", "Options", NULL, 256, onVminChange);
         createTrackbar("Vmax", "Options", NULL, 256, onVmaxChange);
         createTrackbar("Smin", "Options", NULL, 256, onSminChange);
@@ -689,17 +646,69 @@ int main(int argc, char* argv[]) {
     }
 
     trackObject = -1;
-
+    
     Mat hsv, hue, mask, hist, backproj, camshiftbox;
     Rect trackWindow;
     int hsize = 16;
     float phranges[] = {0, 180};
+
+    std::ofstream logFile;
+    logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
+    
+    // Escribir encabezado del archivo (agregar columna de tiempo)
+    logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z\n";
+
+    // Definir una deque para almacenar los puntos y sus tiempos
+    std::deque<Eigen::Vector3d> pointsDequeL;
+    std::deque<Eigen::Vector3d> pointsDequeR;
+    std::deque<long long> timeDeque;
+
+    std::deque<Eigen::Vector3d> filteredPointL;
+    std::deque<Eigen::Vector3d> filteredPointR;
+
+    std::deque<Eigen::Vector3d> refilteredPointL;
+    std::deque<Eigen::Vector3d> refilteredPointR;
+
+    //SOCKET
+	spnav_event sev;
+	int error = 0;
+
+	// Socket variables
+	struct sockaddr_in addrHost;
+    struct hostent * host;
+	int socketPublisher = -1;
 	
 	// Timing variables
 	struct timeval tini;
 	struct timeval tend;
 	double delta_t = 0;
-
+	
+	// Open the socket in datagram mode (UDP)
+	socketPublisher = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if(socketPublisher < 0)
+    {
+    	fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not open socket.\n");
+    	error = 1;
+   	}
+	
+	// Get the host by its IP address (defined as constant or provided through thread structure)
+   	host = gethostbyname(IP_HOST_RECEIVER);
+    if(host == NULL)
+	{
+	    fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not get host by name.\n");
+	    error = 1;
+	}
+	
+	// Set the address of the host
+	if(error == 0)
+	{
+		bzero((char*)&addrHost, sizeof(struct sockaddr_in));
+		addrHost.sin_family = AF_INET;
+		bcopy((char*)host->h_addr, (char*)&addrHost.sin_addr.s_addr, host->h_length);
+		addrHost.sin_port = htons(UDP_PORT_SENDER);
+	}
+	else
+		close(socketPublisher);
 
     while (true) {
         rs2::frameset frames = pipe.wait_for_frames();
@@ -733,93 +742,91 @@ int main(int argc, char* argv[]) {
 
         processImage(image, hsv, hue, mask, trackWindow, trackObject, hist, backproj, edges, hsize, phranges, mode, camshiftbox);
 
+
+
         if (!hist.empty()) {
-
-            vector<Point> bestPolygon = getBestPolygon(edges);
             orthoedro box;
+            try {
+                getCloud(image, edges, depth_frame, color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics(), color_frame.get_profile().as<rs2::video_stream_profile>(), depth_frame.get_profile().as<rs2::video_stream_profile>(), box);
+                if (!box.measuredPoints->points_.empty()) {
+                    filterPointCloud(box);
+                    if (box.filteredCloud->points_.size() > 0) {
+                        calculateBoxParameters(box);
+                        drawVertex(vertexImage, box, intr);
+                        cout << "length:" << abs(box.length) << endl;
+                        cout << "width:" << abs(box.width) << endl;
+                        cout << "height:" << abs(box.height) << endl;
+                        if (box.length*box.height*box.width > 0.35*0.1*0.18) visualizePointCloud(box);
+                        //visualizePointCloud(box);
 
-            if (!bestPolygon.empty()) {
-                polylines(image, bestPolygon, true, Scalar(0, 255, 0), 2, LINE_AA);
-                box.measuredPoints = markVertexDistances(image, bestPolygon, depth_frame, color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics(), color_frame.get_profile().as<rs2::video_stream_profile>(), depth_frame.get_profile().as<rs2::video_stream_profile>());
-                if (!box.measuredPoints.empty()) {
-                    try {
-                        if(calcBoxOrientation(box)){
-                            //cout << box.rotation << endl;
-                            vertexOrthoedro(box);
-                            //cout << "length:" << abs(box.length) << endl;
-                            //cout << "width:" << abs(box.width) << endl;
-                            //cout << "height:" << abs(box.height) << endl;
 
-                            std::cout << std::fixed << std::setprecision(2);
-                            //std::cout << "Center      : (" << box.center.x() << ", " << box.center.y() << ", " << box.center.z() << ")" << std::endl;
-                            // Projecting the center of the orthoedro to pixel coordinates
-                            float point3D[3] = { (float)box.center.x(), (float)box.center.y(), (float)box.center.z() };
-                            float pixel[2];
-                            rs2_project_point_to_pixel(pixel, &intr, point3D);
+                        long long now_ms = getCurrentTimeInMilliseconds();
+                        timeDeque.push_back(now_ms);
+                        pointsDequeL.push_back(box.refPointLeftside);
+                        pointsDequeR.push_back(box.refPointRightside);
 
-                            // We mark the center on the image
-                            Point centerPoint((int)pixel[0], (int)pixel[1]);
-                            circle(image, centerPoint, 5, Scalar(0, 0, 255), FILLED);
-                            putText(image, "Center", centerPoint + Point(10, 0), FONT_HERSHEY_SIMPLEX, 0.5, Scalar(0, 0, 255), 2);
+                        if (timeDeque.size() > MAX_POINTS) {
+                            pointsDequeL.pop_front();
+                            pointsDequeR.pop_front();
+                            timeDeque.pop_front();
+                            filteredPointL.pop_front();
+                            filteredPointR.pop_front();
+                        }
 
-                            drawVertex(vertexImage, box, intr);
-                            
-                            long long now_ms = getCurrentTimeInMilliseconds();
-                            timeDeque.push_back(now_ms);
-                            pointsDequeL.push_back(box.refPointLeftside);
-                            pointsDequeR.push_back(box.refPointRightside);
-
-                            if (timeDeque.size() > MAX_POINTS) {
-                                pointsDequeL.pop_front();
-                                pointsDequeR.pop_front();
-                                timeDeque.pop_front();
-                                filteredPointL.pop_front();
-                                filteredPointR.pop_front();
-                            }
-
-                            if (!filteredPointL.empty() && !pointsDequeL.empty()) {
-                                if ((movingAverageFilter(pointsDequeL)-pointsDequeL[pointsDequeL.size()-1]).norm()<0.1){
-                                    filteredPointL.push_back(movingAverageFilter(pointsDequeL));
-                                    filteredPointR.push_back(movingAverageFilter(pointsDequeR));
-                                }
-                                else {
-                                    filteredPointL.push_back(filteredPointL[filteredPointL.size()-1]);
-                                    filteredPointR.push_back(filteredPointR[filteredPointR.size()-1]);
-                                }
+                        if (!filteredPointL.empty() && !pointsDequeL.empty()) {
+                            if ((aplicarFiltroMediaMovil(pointsDequeL)-pointsDequeL[pointsDequeL.size()-1]).norm()<0.1){
+                                filteredPointL.push_back(aplicarFiltroMediaMovil(pointsDequeL));
+                                filteredPointR.push_back(aplicarFiltroMediaMovil(pointsDequeR));
                             }
                             else {
-                                filteredPointL.push_back(movingAverageFilter(pointsDequeL));
-                                filteredPointR.push_back(movingAverageFilter(pointsDequeR));
+                                filteredPointL.push_back(filteredPointL[filteredPointL.size()-1]);
+                                filteredPointR.push_back(filteredPointR[filteredPointR.size()-1]);
                             }
-
-                            refilteredPointL.push_back(movingAverageFilter(filteredPointL));
-                            refilteredPointR.push_back(movingAverageFilter(filteredPointR));
-
-                            // The calculated points are saved on a csv file named points_log up to MAX_POINTS, when more points are calculated the oldest points of the list are deleted      
-                            logFile.open("../points_log.csv", std::ios::out | std::ios::trunc);
-                            logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
-                            for (int j = 0; j < timeDeque.size(); j++) {
-                                logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
-                            }
-                            logFile.close();
                         }
-                    } catch (const std::exception& e) {
-                        std::cerr << "Error calculating orthoedro's center: " << e.what() << std::endl;
+                        else {
+                            filteredPointL.push_back(aplicarFiltroMediaMovil(pointsDequeL));
+                            filteredPointR.push_back(aplicarFiltroMediaMovil(pointsDequeR));
+                        }
+
+                        refilteredPointL.push_back(aplicarFiltroMediaMovil(filteredPointL));
+                        refilteredPointR.push_back(aplicarFiltroMediaMovil(filteredPointR));
+
+                        // Guardar los últimos 100 puntos con sus tiempos en el archivo        
+                        logFile.close();  // Cerrar el archivo para eliminar el contenido viejo
+                        logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
+                        logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
+                        for (int j = 0; j < timeDeque.size(); j++) {
+                            logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
+                        }
+                                            
+                        strcpy(dataPacket.dataUpdated, "VDP");
+                        
+                        dataPacket.point1[0] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][0]);
+                        dataPacket.point1[1] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][1]);
+                        dataPacket.point1[2] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][2]);
+                        dataPacket.point2[0] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][0]);
+                        dataPacket.point2[1] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][1]);
+                        dataPacket.point2[2] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][2]);
+
+                        // Send the packet
+		                if(sendto(socketPublisher, (char*)&dataPacket, sizeof(DATA_PACKET), 0, (struct sockaddr*)&addrHost, sizeof(struct sockaddr)) < 0)
+	                    {
+		                    fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not send data.\n");
+			                error = 1;
+		                }
                     }
                 }
+            } catch (const std::exception& e) {
+                    std::cerr << "Error calculating orthoedro's center: " << e.what() << std::endl;
             }
         }
 
 
         char c = (char)waitKey(10);
-        if (c == 27) {
-            logFile.close();
-            break;
-        }
-
+        if (c == 27) break;
         if (c == 's') { // 's' to save the configuration
             saveConfigToXML(xmlFileName);
-            cout << "Configuration saved in " << xmlFileName << endl;
+            cout << "Configuración guardada en " << xmlFileName << endl;
         }
 
 
@@ -828,14 +835,14 @@ int main(int argc, char* argv[]) {
         cv::applyColorMap(depth_image_8bit, depth_image_8bit, COLORMAP_JET); // Apply color map to visualize depth data better
 
         if (!depth_image_8bit.empty() && mode == "manual") {
-            //cv::imshow("Depth Image", depth_image_8bit);
-        }
-
+            cv::imshow("Depth Image", depth_image_8bit);
+        } 
+        
         if (selectObject && selection.width > 0 && selection.height > 0) {
             Mat roi(image, selection);
             bitwise_not(roi, roi);
         }
-
+        
         if (mode == "manual"){
             cv::Mat view1, view2, view;
             cv::cvtColor(edges, edges, cv::COLOR_GRAY2BGR);
