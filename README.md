@@ -9,6 +9,7 @@ This repository provides a C++ implementation for detecting and estimating the o
   - [Running the Program](#running-the-program)
   - [Manual mode](#manual-mode)
   - [Automatic mode](#automatic-mode)
+  - [log File](#log-file)
 - [Functions Overview](#functions-overview)
   - [Core Functions](#core-functions)
     - [processImage](#processimage)
@@ -89,6 +90,9 @@ To start the program in automatic mode:
 ```bash
 ./RealSenseBoxDetection auto
 ```
+
+### log file
+A CSV log file ("points_log.csv") containing the calculated reference points with their assigned timestamps is generated. This is useful for analyzing the evolution of the detected reference points over time, allowing post-processing in external tools like MATLAB or Python for further data analysis, filtering, or debugging purposes. The time mark helps correlate the point positions with specific moments during the detection process.
 
 ## Functions Overview
 
