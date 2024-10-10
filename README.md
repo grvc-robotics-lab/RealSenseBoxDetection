@@ -76,6 +76,8 @@ You can adjust the following parameters using the trackbars in the GUI:
 
 ![GUI](GUI.png)
 
+The red rectangle indicates the region selected from the image to generate a histogram for CAMshift-based object tracking.
+
 To start the program in manual mode:
 
 ```bash
