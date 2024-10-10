@@ -146,8 +146,7 @@ A CSV log file ("points_log.csv") containing the calculated reference points wit
 
 #### calculateBoxParameters
 
-- **Purpose:**  
-   Calculates the dimensions (height, width, and length) of the parcel's bounding box and identifies reference points that define the left and right sides of the parcel.
+- **Purpose:** Calculates the dimensions (height, width, and length) of the parcel's bounding box and identifies reference points that define the left and right sides of the parcel.
 
 - **Parameters:**
   - `box`: An `orthoedro` object containing the filtered point cloud and other attributes, such as the oriented bounding box (`obb`), vertices, and reference points.
