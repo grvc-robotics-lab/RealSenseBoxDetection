@@ -9,6 +9,7 @@
 #include <deque>
 #include <fstream>
 
+
 using namespace cv;
 using namespace std;
 using namespace Eigen;
@@ -266,23 +267,34 @@ void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, 
 // The function iterates through the depth frame, checks if each pixel is marked as part of the box on the image edges,
 // and if so, retrieves the depth information for that point. It then converts the 2D pixel
 // coordinates to 3D space and adds the resulting 3D point to the point cloud in the `box` object.
-void getCloud(Mat& edges, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, orthoedro& box) {
- 
-    // Iterate through each point in the depth frame area
-    for (int y = 0; y < depth_frame.get_height(); ++y) {
-        for (int x = 0; x < depth_frame.get_width(); ++x) {
-            if (edges.at<uchar>(y, x) == 255) {
-                // Get the depth at the point (x, y)
-                float depth = depth_frame.get_distance(x, y);
+void getCloud(const Mat& edges, const rs2::depth_frame& depth_frame, const rs2_intrinsics& intr, orthoedro& box) {
+    // Precompute image dimensions
+    int width = depth_frame.get_width();
+    int height = depth_frame.get_height();
+    
+    // Reserve space in the point cloud to avoid dynamic allocations
+    const int totalPixels = width * height;
+    box.measuredPoints->points_.reserve(totalPixels); // Reserve based on a rough estimate
 
-                // If the depth is valid
+    // Parallelize using OpenMP
+    #pragma omp parallel for collapse(2)
+    for (int y = 0; y < height; ++y) {
+        for (int x = 0; x < width; ++x) {
+            // Check if this pixel is an edge (part of the box)
+            if (edges.at<uchar>(y, x) == 255) {
+                // Get the depth at the pixel (x, y)
+                float depth = depth_frame.get_distance(x, y);
+                
+                // If depth is valid, process the point
                 if (depth > 0) {
-                    // Convert from 2D coordinates to 3D using rs2_deproject_pixel_to_point
-                    float point[3]; // To store the 3D coordinates
+                    float point[3];  // To store the 3D coordinates
                     float pixel[2] = { static_cast<float>(x), static_cast<float>(y) };
+
+                    // Convert 2D pixel to 3D point
                     rs2_deproject_pixel_to_point(point, &intr, pixel, depth);
 
-                    // Add the point to the Open3D cloud
+                    // Critical section for safely adding to the point cloud
+                    #pragma omp critical
                     box.measuredPoints->points_.emplace_back(point[0], point[1], point[2]);
                 }
             }
@@ -699,7 +711,7 @@ int main(int argc, char* argv[]) {
         if (c == 27) break;
         if (c == 's') { // 's' to save the configuration
             saveConfigToXML(xmlFileName);
-            cout << "Configuración guardada en " << xmlFileName << endl;
+            cout << "Configuration saved in " << xmlFileName << endl;
         }
 
 

@@ -1,9 +1,9 @@
 <Config>
-    <vmin>171</vmin>
+    <vmin>95</vmin>
     <vmax>256</vmax>
-    <smin>31</smin>
+    <smin>116</smin>
     <smax>256</smax>
-    <huemin>15</huemin>
+    <huemin>16</huemin>
     <huemax>34</huemax>
     <minContour>5000</minContour>
 </Config>
