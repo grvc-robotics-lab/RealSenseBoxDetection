@@ -1,3 +1,5 @@
+// base code is V5.7, to which the socket sending is added
+
 #include <opencv2/opencv.hpp>
 #include <librealsense2/rs.hpp>
 #include <Eigen/Dense>
@@ -5,16 +7,42 @@
 #include <iomanip>
 #include "tinyxml2.h"
 #include <open3d/Open3D.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+#include <unistd.h>
+#include <pthread.h>
+#include <sys/types.h> 
+#include <sys/socket.h>
+#include <netinet/in.h>
+#include <netdb.h>
+#include <spnav.h>
 #include <sys/time.h>
 #include <deque>
 #include <fstream>
-
+#include <omp.h> // For parallelization with OpenMP
 
 using namespace cv;
 using namespace std;
 using namespace Eigen;
 
+// Constant definition
+#define IP_HOST_RECEIVER		"127.0.0.1"
+#define UDP_PORT_SENDER			22011
+#define SENDER_DATA_RATE		100		// Data rate in Hz for sending parcel position/orientation through UDP socket
 #define MAX_POINTS 100000
+
+// Data packet (customizable by user)
+typedef struct
+{
+	char dataUpdated[3];
+	float point1[3];
+	float point2[3];
+} __attribute__((packed))  DATA_PACKET;		// Force consecutive bytes, removing possible zero padding
+
+
+DATA_PACKET dataPacket;
+
 
 Mat image;
 Rect selection;
@@ -148,7 +176,6 @@ void saveConfigToXML(const string& filename) {
         cerr << "Error saving XML file: " << filename << endl;
     }
 }
-
 
 //Converts the input image to HSV format, applies color segmentation, tracks the parcel using CAMShift, and uses opencv image processing functions to obtain a mask that isolates the parcel.
 void processImage(Mat& color, Mat& hsv, Mat& hue, Mat& mask, Rect& trackWindow, int& trackObject, Mat& hist, Mat& backproj, Mat& edges, int hsize, const float* phranges, string& mode, Mat& camshiftbox) {
@@ -302,6 +329,7 @@ void getCloud(const Mat& edges, const rs2::depth_frame& depth_frame, const rs2_i
     }
 }
 
+
 void drawVertex(cv::Mat& image, const orthoedro& box, const rs2_intrinsics& intr) {
 
     for (size_t i = 0; i < box.vertex.size(); ++i) {
@@ -385,14 +413,17 @@ void rotateCloud(std::shared_ptr<open3d::geometry::PointCloud>& cloud, const Eig
 // It segments the main plane from the measured points, rotates the clouds,
 // and constructs a filtered cloud by adding points from the detected planes.
 void filterPointCloud(orthoedro& box) {
-    box.measuredPoints = box.measuredPoints->VoxelDownSample(0.002);
+    double voxelSize = 0.002;
+    int neighbors = 40;
+
+    box.measuredPoints = box.measuredPoints->VoxelDownSample(voxelSize);
     std::vector<size_t> outlier_indices;
     //tie(box.measuredPoints, outlier_indices) = box.measuredPoints->RemoveRadiusOutliers(60, 0.01);
 
     if (box.measuredPoints->points_.size() == 0) return;
 
     // Parameters for plane segmentation
-    double distance_threshold = 0.002;  // Distance threshold to consider a point on the plane
+    double distance_threshold = 1.3*voxelSize;  // Distance threshold to consider a point on the plane
     int ransac_n = 3;                   // Number of points for each plane model estimation
     int num_iterations = 1000;          // Number of RANSAC iterations
 
@@ -409,14 +440,13 @@ void filterPointCloud(orthoedro& box) {
     box.mainPlane = box.measuredPoints->SelectByIndex(inliers);
 
     outlier_indices.clear();
-    tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(35, 0.01);
+    tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(neighbors, 5*voxelSize);
 
     if (box.remaining_cloud->points_.size() == 0) return;
 
-    int neighbors = 40;
     outlier_indices.clear();
     if (box.remaining_cloud->points_.size() > neighbors) {
-        tie(box.remaining_cloud, outlier_indices) = box.remaining_cloud->RemoveRadiusOutliers(neighbors, 0.01);
+        tie(box.remaining_cloud, outlier_indices) = box.remaining_cloud->RemoveRadiusOutliers(neighbors, 5*voxelSize);
     }
 
     if (box.remaining_cloud->points_.size() == 0) return;
@@ -432,7 +462,7 @@ void filterPointCloud(orthoedro& box) {
     planeCloud = box.remaining_cloud->SelectByIndex(auxInliers);
     
     outlier_indices.clear();
-    tie(planeCloud, outlier_indices) = planeCloud->RemoveRadiusOutliers(35, 0.01);
+    tie(planeCloud, outlier_indices) = planeCloud->RemoveRadiusOutliers(neighbors, 5*voxelSize);
     
     *box.filteredCloud += *planeCloud;
 
@@ -457,7 +487,6 @@ void filterPointCloud(orthoedro& box) {
     rotateCloud(box.measuredPoints, plane_model, true);
     rotateCloud(box.filteredCloud, plane_model, true);
 }
-
 // Calculates the dimensions (height, width, and length) of the parcel's bounding box and identifies reference points that define the left and right sides of the parcel.
 void calculateBoxParameters(orthoedro& box){
     box.obb = box.filteredCloud->GetMinimalOrientedBoundingBox();
@@ -592,8 +621,12 @@ int main(int argc, char* argv[]) {
     float phranges[] = {0, 180};
 
     std::ofstream logFile;
+    logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
+    
+    // Escribir encabezado del archivo (agregar columna de tiempo)
+    logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z\n";
 
-    // Define a deque to store the points and their times
+    // Definir una deque para almacenar los puntos y sus tiempos
     std::deque<Eigen::Vector3d> pointsDequeL;
     std::deque<Eigen::Vector3d> pointsDequeR;
     std::deque<long long> timeDeque;
@@ -604,16 +637,60 @@ int main(int argc, char* argv[]) {
     std::deque<Eigen::Vector3d> refilteredPointL;
     std::deque<Eigen::Vector3d> refilteredPointR;
 
+    //SOCKET
+	spnav_event sev;
+	int error = 0;
+
+	// Socket variables
+	struct sockaddr_in addrHost;
+    struct hostent * host;
+	int socketPublisher = -1;
 	
 	// Timing variables
-	struct timeval tini;
-	struct timeval tend;
-	double delta_t = 0;
+	long tini;
+	long tend;
+
+    long T0;
+    long Tf;
 	
+	// Open the socket in datagram mode (UDP)
+	socketPublisher = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+    if(socketPublisher < 0)
+    {
+    	fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not open socket.\n");
+    	error = 1;
+   	}
+	
+	// Get the host by its IP address (defined as constant or provided through thread structure)
+   	host = gethostbyname(IP_HOST_RECEIVER);
+    if(host == NULL)
+	{
+	    fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not get host by name.\n");
+	    error = 1;
+	}
+	
+	// Set the address of the host
+	if(error == 0)
+	{
+		bzero((char*)&addrHost, sizeof(struct sockaddr_in));
+		addrHost.sin_family = AF_INET;
+		bcopy((char*)host->h_addr, (char*)&addrHost.sin_addr.s_addr, host->h_length);
+		addrHost.sin_port = htons(UDP_PORT_SENDER);
+	}
+	else
+		close(socketPublisher);
 
     while (true) {
+        T0 = getCurrentTimeInMilliseconds();
+        tini = getCurrentTimeInMilliseconds();
         rs2::frameset frames = pipe.wait_for_frames();
+        tend = getCurrentTimeInMilliseconds();
+        cout << "Waiting for frame takes " << tend-tini << "ms" << endl;
+
+        tini = getCurrentTimeInMilliseconds();
         frames = align_to_color.process(frames);
+        tend = getCurrentTimeInMilliseconds();
+        cout << "Aligning process takes " << tend-tini << "ms" << endl;
 
         rs2::video_frame color_frame = frames.get_color_frame();
         rs2::depth_frame depth_frame = frames.get_depth_frame();
@@ -641,25 +718,37 @@ int main(int argc, char* argv[]) {
             continue;
         }
 
+        tini = getCurrentTimeInMilliseconds();
         processImage(image, hsv, hue, mask, trackWindow, trackObject, hist, backproj, edges, hsize, phranges, mode, camshiftbox);
-
-
+        tend = getCurrentTimeInMilliseconds();
+        cout << "Image processing takes " << tend-tini << "ms" << endl;
 
         if (!hist.empty()) {
             orthoedro box;
             try {
+                tini = getCurrentTimeInMilliseconds();
                 getCloud(edges, depth_frame, color_frame.get_profile().as<rs2::video_stream_profile>().get_intrinsics(), box);
+                tend = getCurrentTimeInMilliseconds();
+                cout << "Getting the cloud takes " << tend-tini << "ms" << endl;                
                 if (!box.measuredPoints->points_.empty()) {
+                    tini = getCurrentTimeInMilliseconds(); 
                     filterPointCloud(box);
+                    tend = getCurrentTimeInMilliseconds();
+                    cout << "Filtering process takes " << tend-tini << "ms" << endl;
                     if (box.filteredCloud->points_.size() > 0) {
+                        tini = getCurrentTimeInMilliseconds();
                         calculateBoxParameters(box);
-                        drawVertex(vertexImage, box, intr);
+                        tend = getCurrentTimeInMilliseconds();
+                        cout << "Calculate box parameters takes " << tend-tini << "ms" << endl;
+    
+                        if (mode == "manual") drawVertex(vertexImage, box, intr);
                         cout << "length:" << abs(box.length) << endl;
                         cout << "width:" << abs(box.width) << endl;
                         cout << "height:" << abs(box.height) << endl;
                         //if (box.length*box.height*box.width > 0.35*0.1*0.18) visualizePointCloud(box);
                         //visualizePointCloud(box);
 
+                        tini = getCurrentTimeInMilliseconds();
 
                         long long now_ms = getCurrentTimeInMilliseconds();
                         timeDeque.push_back(now_ms);
@@ -692,13 +781,36 @@ int main(int argc, char* argv[]) {
                         refilteredPointL.push_back(movingAverageFilter(filteredPointL));
                         refilteredPointR.push_back(movingAverageFilter(filteredPointR));
 
-                        // The calculated points are saved on a csv file named points_log up to MAX_POINTS, when more points are calculated the oldest points of the list are deleted      
-                        logFile.open("../points_log.csv", std::ios::out | std::ios::trunc);
+                        tend = getCurrentTimeInMilliseconds();
+                        cout << "Filtering points takes " << tend-tini << "ms" << endl;
+    
+
+                        /*
+                        // Guardar los últimos 100 puntos con sus tiempos en el archivo        
+                        logFile.close();  // Cerrar el archivo para eliminar el contenido viejo
+                        logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
                         logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
                         for (int j = 0; j < timeDeque.size(); j++) {
                             logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
                         }
-                        logFile.close();
+
+                        */
+                                            
+                        strcpy(dataPacket.dataUpdated, "VDP");
+                        
+                        dataPacket.point1[0] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][0]);
+                        dataPacket.point1[1] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][1]);
+                        dataPacket.point1[2] = static_cast<float>(refilteredPointL[refilteredPointL.size()-1][2]);
+                        dataPacket.point2[0] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][0]);
+                        dataPacket.point2[1] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][1]);
+                        dataPacket.point2[2] = static_cast<float>(refilteredPointR[refilteredPointR.size()-1][2]);
+
+                        // Send the packet
+                        if(sendto(socketPublisher, (char*)&dataPacket, sizeof(DATA_PACKET), 0, (struct sockaddr*)&addrHost, sizeof(struct sockaddr)) < 0)
+                        {
+                            fprintf(stderr, "ERROR: [in senderThreadFunction(...)] could not send data.\n");
+                            error = 1;
+                        }
                     }
                 }
             } catch (const std::exception& e) {
@@ -711,7 +823,7 @@ int main(int argc, char* argv[]) {
         if (c == 27) break;
         if (c == 's') { // 's' to save the configuration
             saveConfigToXML(xmlFileName);
-            cout << "Configuration saved in " << xmlFileName << endl;
+            cout << "Configuración guardada en " << xmlFileName << endl;
         }
 
 
@@ -749,6 +861,8 @@ int main(int argc, char* argv[]) {
             cv::imshow("View", view);
             cv::imshow("Options", mask);
         }
+        Tf = getCurrentTimeInMilliseconds();
+        cout << "Running the program takes " << Tf-T0 << " ms, so it's runing at " << 1000/(Tf-T0) << " Hz" << endl;    
     }
 
     return 0;
