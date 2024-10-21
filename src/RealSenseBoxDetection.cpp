@@ -631,12 +631,8 @@ int main(int argc, char* argv[]) {
     float phranges[] = {0, 180};
 
     std::ofstream logFile;
-    logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
-    
-    // Escribir encabezado del archivo (agregar columna de tiempo)
-    logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z\n";
 
-    // Definir una deque para almacenar los puntos y sus tiempos
+    // Define a deque to store the points and their times
     std::deque<Eigen::Vector3d> pointsDequeL;
     std::deque<Eigen::Vector3d> pointsDequeR;
     std::deque<long long> timeDeque;
@@ -795,16 +791,13 @@ int main(int argc, char* argv[]) {
                         cout << "Filtering points takes " << tend-tini << "ms" << endl;
     
 
-                        /*
-                        // Guardar los últimos 100 puntos con sus tiempos en el archivo        
-                        logFile.close();  // Cerrar el archivo para eliminar el contenido viejo
-                        logFile.open("../puntos_log.csv", std::ios::out | std::ios::trunc);
+                        // The calculated points are saved on a csv file named points_log up to MAX_POINTS, when more points are calculated the oldest points of the list are deleted      
+                        logFile.open("../points_log.csv", std::ios::out | std::ios::trunc);
                         logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
                         for (int j = 0; j < timeDeque.size(); j++) {
                             logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
                         }
-
-                        */
+                        logFile.close();
                                             
                         strcpy(dataPacket.dataUpdated, "VDP");
                         
