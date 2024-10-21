@@ -1,7 +1,7 @@
 <Config>
-    <vmin>95</vmin>
+    <vmin>67</vmin>
     <vmax>256</vmax>
-    <smin>116</smin>
+    <smin>142</smin>
     <smax>256</smax>
     <huemin>16</huemin>
     <huemax>34</huemax>

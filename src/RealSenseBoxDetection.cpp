@@ -37,10 +37,16 @@ using namespace Eigen;
                          // Smaller values result in higher resolution but more points and slower processing.
                          // Larger values lead to lower resolution but improve processing speed and reduce memory usage.
 
-#define GridStep 1 // Defines the step size for the pixel grid in the getCloud function. 
+#define GridStep 2 // Defines the step size for the pixel grid in the getCloud function. 
                    // A value of 1 means every pixel is processed, while higher values (e.g., 2 or 3) 
                    // will skip pixels to reduce computation and speed up the process, 
                    // at the cost of potentially lower point cloud density.
+
+#define base_neighbors 40  // Number of neighboring points considered when removing outliers using radius-based filtering in filterPointCloud function. (40 or so for voxelSize = 0.004 and 30 or so for voxelSize = 0.01)
+
+
+double dist_radius = 5*0.004;
+int neighbors = base_neighbors/voxelSize/voxelSize*0.004*0.004;
 
 // Data packet (customizable by user)
 typedef struct
@@ -423,8 +429,6 @@ void rotateCloud(std::shared_ptr<open3d::geometry::PointCloud>& cloud, const Eig
 // It segments the main plane from the measured points, rotates the clouds,
 // and constructs a filtered cloud by adding points from the detected planes.
 void filterPointCloud(orthoedro& box) {
-    int neighbors = 40;
-
     box.measuredPoints = box.measuredPoints->VoxelDownSample(voxelSize);
     std::vector<size_t> outlier_indices;
     //tie(box.measuredPoints, outlier_indices) = box.measuredPoints->RemoveRadiusOutliers(60, 0.01);
@@ -449,13 +453,13 @@ void filterPointCloud(orthoedro& box) {
     box.mainPlane = box.measuredPoints->SelectByIndex(inliers);
 
     outlier_indices.clear();
-    tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(neighbors, 5*voxelSize);
+    tie(box.mainPlane, outlier_indices) = box.mainPlane->RemoveRadiusOutliers(neighbors*voxelSize/0.004, dist_radius);
 
     if (box.remaining_cloud->points_.size() == 0) return;
 
     outlier_indices.clear();
-    if (box.remaining_cloud->points_.size() > neighbors) {
-        tie(box.remaining_cloud, outlier_indices) = box.remaining_cloud->RemoveRadiusOutliers(neighbors, 5*voxelSize);
+    if (box.remaining_cloud->points_.size() > neighbors*voxelSize/0.004) {
+        tie(box.remaining_cloud, outlier_indices) = box.remaining_cloud->RemoveRadiusOutliers(neighbors*voxelSize/0.004, dist_radius);
     }
 
     if (box.remaining_cloud->points_.size() == 0) return;
@@ -471,7 +475,7 @@ void filterPointCloud(orthoedro& box) {
     planeCloud = box.remaining_cloud->SelectByIndex(auxInliers);
     
     outlier_indices.clear();
-    tie(planeCloud, outlier_indices) = planeCloud->RemoveRadiusOutliers(neighbors, 5*voxelSize);
+    tie(planeCloud, outlier_indices) = planeCloud->RemoveRadiusOutliers(neighbors*voxelSize/0.004, dist_radius);
     
     *box.filteredCloud += *planeCloud;
 
@@ -557,9 +561,9 @@ void visualizePointCloud(orthoedro& box) {
     geometries.push_back(std::make_shared<open3d::geometry::OrientedBoundingBox>(box.obb));
 
     // Add the measured point cloud (original)
-    //geometries.push_back(box.measuredPoints);
+    geometries.push_back(box.measuredPoints);
     geometries.push_back(box.filteredCloud);
-    geometries.push_back(box.remaining_cloud);
+    //geometries.push_back(box.remaining_cloud);
 
     // Visualize all geometries
     open3d::visualization::DrawGeometries(geometries, "Point Cloud Visualization with Segmented Plane");
@@ -754,8 +758,6 @@ int main(int argc, char* argv[]) {
                         //if (box.length*box.height*box.width > 0.35*0.1*0.18) visualizePointCloud(box);
                         //visualizePointCloud(box);
 
-                        tini = getCurrentTimeInMilliseconds();
-
                         long long now_ms = getCurrentTimeInMilliseconds();
                         timeDeque.push_back(now_ms);
                         pointsDequeL.push_back(box.refPointLeftside);
@@ -786,11 +788,8 @@ int main(int argc, char* argv[]) {
 
                         refilteredPointL.push_back(movingAverageFilter(filteredPointL));
                         refilteredPointR.push_back(movingAverageFilter(filteredPointR));
-
-                        tend = getCurrentTimeInMilliseconds();
-                        cout << "Filtering points takes " << tend-tini << "ms" << endl;
     
-
+                        /*
                         // The calculated points are saved on a csv file named points_log up to MAX_POINTS, when more points are calculated the oldest points of the list are deleted      
                         logFile.open("../points_log.csv", std::ios::out | std::ios::trunc);
                         logFile << "Time,Left_X,Left_Y,Left_Z,Right_X,Right_Y,Right_Z,F_Left_X,F_Left_Y,F_Left_Z,F_Right_X,F_Right_Y,F_Right_Z\n";
@@ -798,6 +797,7 @@ int main(int argc, char* argv[]) {
                             logFile << (timeDeque[j]-timeDeque[0]) << "," << pointsDequeL[j][0] << "," << pointsDequeL[j][1] << "," << pointsDequeL[j][2] << "," << pointsDequeR[j][0] << "," << pointsDequeR[j][1] << "," << pointsDequeR[j][2] << "," << refilteredPointL[j].x() << "," << refilteredPointL[j].y() << "," << refilteredPointL[j].z() << "," << refilteredPointR[j].x() << "," << refilteredPointR[j].y() << "," << refilteredPointR[j].z() << "\n";
                         }
                         logFile.close();
+                        */
                                             
                         strcpy(dataPacket.dataUpdated, "VDP");
                         
