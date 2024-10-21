@@ -32,6 +32,16 @@ using namespace Eigen;
 #define SENDER_DATA_RATE		100		// Data rate in Hz for sending parcel position/orientation through UDP socket
 #define MAX_POINTS 100000
 
+// Parameters for load reduction and frequency improvement
+#define voxelSize 0.004  // Defines the size of each voxel for downsampling the point cloud.
+                         // Smaller values result in higher resolution but more points and slower processing.
+                         // Larger values lead to lower resolution but improve processing speed and reduce memory usage.
+
+#define GridStep 1 // Defines the step size for the pixel grid in the getCloud function. 
+                   // A value of 1 means every pixel is processed, while higher values (e.g., 2 or 3) 
+                   // will skip pixels to reduce computation and speed up the process, 
+                   // at the cost of potentially lower point cloud density.
+
 // Data packet (customizable by user)
 typedef struct
 {
@@ -301,12 +311,12 @@ void getCloud(const Mat& edges, const rs2::depth_frame& depth_frame, const rs2_i
     
     // Reserve space in the point cloud to avoid dynamic allocations
     const int totalPixels = width * height;
-    box.measuredPoints->points_.reserve(totalPixels); // Reserve based on a rough estimate
+    box.measuredPoints->points_.reserve(totalPixels/GridStep/GridStep); // Reserve based on a rough estimate
 
     // Parallelize using OpenMP
     #pragma omp parallel for collapse(2)
-    for (int y = 0; y < height; ++y) {
-        for (int x = 0; x < width; ++x) {
+    for (int y = 0; y < height; y = y + GridStep) {
+        for (int x = 0; x < width; x = x + GridStep) {
             // Check if this pixel is an edge (part of the box)
             if (edges.at<uchar>(y, x) == 255) {
                 // Get the depth at the pixel (x, y)
@@ -413,7 +423,6 @@ void rotateCloud(std::shared_ptr<open3d::geometry::PointCloud>& cloud, const Eig
 // It segments the main plane from the measured points, rotates the clouds,
 // and constructs a filtered cloud by adding points from the detected planes.
 void filterPointCloud(orthoedro& box) {
-    double voxelSize = 0.002;
     int neighbors = 40;
 
     box.measuredPoints = box.measuredPoints->VoxelDownSample(voxelSize);
@@ -487,6 +496,7 @@ void filterPointCloud(orthoedro& box) {
     rotateCloud(box.measuredPoints, plane_model, true);
     rotateCloud(box.filteredCloud, plane_model, true);
 }
+
 // Calculates the dimensions (height, width, and length) of the parcel's bounding box and identifies reference points that define the left and right sides of the parcel.
 void calculateBoxParameters(orthoedro& box){
     box.obb = box.filteredCloud->GetMinimalOrientedBoundingBox();
