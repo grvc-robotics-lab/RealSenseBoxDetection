@@ -826,7 +826,7 @@ int main(int argc, char* argv[]) {
         if (c == 27) break;
         if (c == 's') { // 's' to save the configuration
             saveConfigToXML(xmlFileName);
-            cout << "Configuración guardada en " << xmlFileName << endl;
+            cout << "Configuration saved in " << xmlFileName << endl;
         }
 
 
